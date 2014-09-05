@@ -36,6 +36,8 @@ using ClipperLib::SimplifyPolygons;
 
 // By convention all paths are type EvenOdd.
 
+#define MUST_USE_RESULT __attribute__((warn_unused_result))
+
 namespace {
   struct Config {
     std::map<uint32_t, double> color_to_height;
@@ -111,10 +113,14 @@ namespace {
     }
     config.svg_path = argv[optind];
     if (config.material_height <= 0) {
-      fprintf(stderr,
-              "Material height (thickness) must be specified and greater than "
-              "zero.\n");
-      exit(EXIT_FAILURE);
+      for (const auto &iter : config.color_to_height) {
+        config.material_height = std::max(config.material_height, iter.second);
+      }
+      if (config.material_height <= 0) {
+        fprintf(stderr,
+                "Material height (thickness) must be greater than zero.\n");
+        exit(EXIT_FAILURE);
+      }
     }
     if (config.diameter <= 0) {
       fprintf(stderr, "Bit diameter must be specified and greater than zero.\n");
@@ -123,6 +129,7 @@ namespace {
     return config;
   }
 
+  bool ReadFileToString(const char *, std::string *) MUST_USE_RESULT;
   bool ReadFileToString(const char *path, std::string *result) {
     struct stat sb;
     if (stat(path, &sb)) {
@@ -148,7 +155,8 @@ namespace {
     return true;
   }
 
-  struct svgtiny_diagram *LoadSvg(const char *path) { 
+  struct svgtiny_diagram *LoadSvg(const char *) MUST_USE_RESULT;
+  struct svgtiny_diagram *LoadSvg(const char *path) {
     std::string svg_contents;
     if (!ReadFileToString(path, &svg_contents)) {
       return nullptr;
@@ -190,32 +198,34 @@ namespace {
     return x * kQuantaPerInch;
   }
 
+  inline double QuantaToInches(cInt x) {
+    return double(x) / kQuantaPerInch;
+  }
+
   inline cInt SvgToQuanta(double x) {
     return InchesToQuanta(SvgToInches(x));
   }
 
-  bool ConvertPath(const float *input, unsigned int length, Paths *output) {
-    printf("convert_path\n");
+  bool ConvertPath(const float *, unsigned int, double, Paths *) MUST_USE_RESULT;
+  bool ConvertPath(const float *input, unsigned int length, double svg_height, Paths *output) {
     Path *path = nullptr;
     unsigned int j;
     for (j = 0; j < length; ) {
       switch ((int) input[j]) {
       case svgtiny_PATH_MOVE:
-        printf("move ");
         if (path)
           return false;
         output->push_back(Path());
         path = &output->back();
       case svgtiny_PATH_LINE:
-        printf("line %f %f\n", input[j+1], input[j + 2]);
         if (!path || (j + 3) > length)
           return false;
+        // Invert y axis.
         path->push_back(IntPoint(SvgToQuanta(input[j+1]),
-                                 SvgToQuanta(input[j+2])));
+                                 SvgToQuanta(svg_height - input[j+2])));
         j += 3;
         break;
       case svgtiny_PATH_CLOSE:
-        printf("close\n");
         if (!path || (j + 1) > length)
           return false;
         if (path->front() == path->back())
@@ -224,9 +234,10 @@ namespace {
         j += 1;
         break;
       case svgtiny_PATH_BEZIER:
-        printf("(skipping) bezier..\n");
         // TOOD: Add support for bezier.
-        // TODO: expect 7 available.
+        fprintf(stderr, "(skipping) bezier..\n");
+        if (!path || (j + 7) > length)
+          return false;
         // http://cairographics.org/manual/cairo-Paths.html#cairo-curve-to
         // http://en.wikipedia.org/wiki/B%C3%A9zier_curve
         // cairo_curve_to(cr,
@@ -245,6 +256,7 @@ namespace {
     return true;
   }
 
+  bool UnionInto(const Paths &, Paths *) MUST_USE_RESULT;
   bool UnionInto(const Paths &paths, Paths *result) {
     if (paths.empty())
       return true;
@@ -267,6 +279,9 @@ namespace {
     return true;
   }
   
+  bool SvgToPolygons(const struct svgtiny_diagram &,
+                     const Config &,
+                     std::map<double, Paths> *) MUST_USE_RESULT;
   bool SvgToPolygons(const struct svgtiny_diagram &diagram,
                      const Config &config,
                      std::map<double, Paths> *layers) {
@@ -274,7 +289,7 @@ namespace {
       const auto &shape = diagram.shape[i];
       if (shape.path) {
         Paths paths;
-        if (!ConvertPath(shape.path, shape.path_length, &paths)) {
+        if (!ConvertPath(shape.path, shape.path_length, diagram.height, &paths)) {
           fprintf(stderr, "unable to process path.\n");
           return false;
         }
@@ -293,6 +308,7 @@ namespace {
     return true;
   }
 
+  bool SameOrInside(const Path &, const Path &) MUST_USE_RESULT;
   bool SameOrInside(const Path &inner, const Path &outer) {
     for (const auto &pt : inner) {
       if (PointInPolygon(pt, outer) == 0)
@@ -301,50 +317,33 @@ namespace {
     return true;  // All points on or inside.
   }
 
-  // Assuming continent is one or more polygons (which may have holes). Find one
-  // disjoint polygon and move it and any corresponding holes to island.
-  bool SeparateIsland(Paths *continent, Paths *island) {
-    island->clear();
-    Paths unn;
-    for (const Path &path : *continent) {
-      Paths paths{path};
-      if (!UnionInto(paths, &unn))
-        return false;
-    }
-    // unn is now a set of polygons without any holes.
-    if (unn.size() < 2) {
-      island->swap(*continent);
-    } else {
-      Paths remaining;
-      for (const Path &path : *continent) {
-        if (SameOrInside(path, unn[0])) {
-          island->push_back(path);
-        } else {
-          remaining.push_back(path);
-        }
-      }
-      // TODO: I don't think this temporary is actually necessary.
-      remaining.swap(*continent);
-    }
-    return true;
-  }
+  // Assuming all is one or more polygons (which may have holes). Find one
+  // disjoint polygon and copy it and any corresponding holes to island.
+  // bool FindIsland(const Paths &all, Paths *island) {
+  //   island->clear();
+  //   Paths unn;
+  //   for (const Path &path : all) {
+  //     Paths paths{path};
+  //     if (!UnionInto(paths, &unn))
+  //       return false;
+  //   }
+  //   if (unn.empty())
+  //     return false;
+  //   // unn is now a set of polygons without any holes.
+  //   for (const Path &path : all) {
+  //     if (SameOrInside(path, unn[0])) {
+  //       island->push_back(path);
+  //     }
+  //   }
+  //   return true;
+  // }
 
   void ComputeOffset(const Paths &paths, double amount, Paths *result) {
     ClipperOffset co;
     co.ArcTolerance = kQuantaPerInch / 1000;
     // TODO: Do we need to check orientations here?
     co.AddPaths(paths, jtRound, etClosedPolygon);
-    co.Execute(*result, amount * kQuantaPerInch);
-  }
-
-  void SubtractFrom(const Paths &a, Paths *b) {
-    // TODO: Add error checking.
-    Clipper c;
-    c.AddPaths(*b, ptSubject, true);
-    c.AddPaths(a, ptClip, true);
-    Paths remaining;
-    c.Execute(ctDifference, remaining);
-    b->swap(remaining);
+    co.Execute(*result, InchesToQuanta(amount));
   }
 
   // Offset a path to a polygon.
@@ -353,81 +352,107 @@ namespace {
     co.ArcTolerance = kQuantaPerInch / 1000;
     // TODO: Do we need to check orientations here?
     co.AddPaths(cut, jtRound, etClosedLine);
-    co.Execute(*result, radius * kQuantaPerInch);
+    co.Execute(*result, InchesToQuanta(radius));
   }
 
-  void Print(const Paths &paths) {
-    printf("[\n");
-    for (const auto &path : paths) {
-      for (const auto &pt : path) {
-        printf(" %lld,%lld", pt.X, pt.Y);
-      }
-      printf("\n");
-    }
-    printf("]\n");
+  bool SubtractFrom(const Paths &, Paths *) MUST_USE_RESULT;
+  bool SubtractFrom(const Paths &a, Paths *b) {
+    Clipper c;
+    return c.AddPaths(*b, ptSubject, true) &&
+      c.AddPaths(a, ptClip, true) &&
+      c.Execute(ctDifference, *b);
   }
 
   void MillEdges(const Config &config,
-                 const Paths &higher_layers) {
-    printf("MillEdges\n");
+                 const Paths &higher_layers,
+                 Paths *cuts) {
     Paths edge_cuts;
     ComputeOffset(higher_layers, config.diameter * .5, &edge_cuts);
-    // TODO: Output(edge_cuts, height);
-    Print(higher_layers);
-    Print(edge_cuts);
+    cuts->insert(cuts->end(), edge_cuts.begin(), edge_cuts.end());
   }
 
+  bool MillSurface(const Config &,
+                   const Paths &,
+                   Paths *) MUST_USE_RESULT;
   bool MillSurface(const Config &config,
-                   const Paths &surface) {
-    printf("MillSurface\n");
+                   const Paths &surface,
+                   Paths *cuts) {
     Paths remaining(surface);
     while (!remaining.empty()) {
-      Paths island;
-      // TODO: Is island separation still required?
-      if (!SeparateIsland(&remaining, &island))
-        return false;
       // Shrink by less than radius.
       Paths cut;
-      ComputeOffset(island, -(config.diameter * .5 * config.non_overlap), &cut);
+      ComputeOffset(remaining, -(config.diameter * .5 * config.non_overlap), &cut);
 
       // In some cases an area smaller than the bit is left and cut is empty.
       // To make sure this material is removed we cut the outer edge. This is
       // less efficient than is optimal, but it's a rare, small case.
       if (cut.empty())
-        cut.swap(island);
+        cut.swap(remaining);
 
-      // TODO: Output(cut, height);
-      Print(cut);
+      cuts->insert(cuts->end(), cut.begin(), cut.end());
+
       Paths mask;
       CutToPolygon(cut, config.diameter * .5, &mask);
-      SubtractFrom(mask, &remaining);
+      if (!SubtractFrom(mask, &remaining))
+        return false;
     }
     return true;
   }
 
-  bool Process(const Config &config, const std::map<double, Paths> &layers) {
+  bool ComputeCuts(const Config &,
+                   const std::map<double, Paths> &,
+                   std::map<double, Paths> *) MUST_USE_RESULT;
+  bool ComputeCuts(const Config &config,
+                   const std::map<double, Paths> &layers,
+                   std::map<double, Paths> *height_to_cuts) {
     Paths higher_layer_union;
     for (auto iter = layers.rbegin(); iter != layers.rend(); ++iter) {
       const double height = iter->first;
       const Paths &polygons = iter->second;
       if (height < config.material_height) {
         Paths mill_area = polygons;
+        Paths *cuts = &(*height_to_cuts)[height];
         if (!higher_layer_union.empty()) {
-          MillEdges(config, higher_layer_union);
+          // Mill the edges of the layer above.
+          MillEdges(config, higher_layer_union, cuts);
 
           Paths tmp;
           ComputeOffset(higher_layer_union, config.diameter, &tmp);
-          SubtractFrom(tmp, &mill_area);
+          if (!SubtractFrom(tmp, &mill_area))
+            return false;
         }
-        if (!MillSurface(config, mill_area))
+        if (!MillSurface(config, mill_area, cuts))
           return false;
       }
       if (!UnionInto(polygons, &higher_layer_union))
         return false;
     }
-    // Also cut through to zero.
-    MillEdges(config, higher_layer_union);
+    MillEdges(config, higher_layer_union, &(*height_to_cuts)[0]);
     return true;
+  }
+
+  void ToDebugPs(const std::map<double, Paths> &height_to_cuts) {
+    FILE *fp = fopen("debug.ps", "w");
+    if (!fp)
+      return;
+
+    for (const auto &layer : height_to_cuts) {
+      const double color = 1. - layer.first;
+      for (const auto &cut : layer.second) {
+        fprintf(fp, "0.2 setlinewidth\n");
+        for (const auto &pt : cut) {
+          fprintf(fp, "%f %f %s\n",
+                  QuantaToInches(pt.X) * 72,
+                  QuantaToInches(pt.Y) * 72,
+                  &pt == &*cut.begin() ? "newpath moveto" : "lineto");
+        }
+        fprintf(fp, "closepath\n");
+        fprintf(fp, "%f setgray\n", color);
+        fprintf(fp, "stroke\n");
+      }
+    }
+
+    fclose(fp);
   }
 }  // namespace
 
@@ -444,6 +469,8 @@ int main(int argc, char *argv[]) {
   for (auto iter : layers) {
     SimplifyPolygons(iter.second);
   }
-  r == r && Process(config, layers);
+  std::map<double, Paths> height_to_cuts;
+  r = r && ComputeCuts(config, layers, &height_to_cuts);
+  ToDebugPs(height_to_cuts);
   return r ? EXIT_SUCCESS : EXIT_FAILURE;
 }
