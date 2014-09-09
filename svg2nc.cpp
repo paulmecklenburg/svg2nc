@@ -1,7 +1,10 @@
+#include <algorithm>
 #include <map>
 #include <set>
 #include <string>
+#include <utility>
 
+#include <assert.h>
 #include <getopt.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -11,30 +14,34 @@
 #include <unistd.h>
 
 #include "polyclipping/clipper.hpp"
+#include "uniq_seg.h"
 extern "C" {
 #include "svgtiny.h"
-}
+}  // extern "C"
 
 using ClipperLib::cInt;
 using ClipperLib::ctUnion;
 using ClipperLib::Clipper;
 using ClipperLib::ClipperOffset;
 using ClipperLib::ctDifference;
+using ClipperLib::ctIntersection;
 using ClipperLib::etClosedLine;
 using ClipperLib::etClosedPolygon;
 using ClipperLib::IntPoint;
+using ClipperLib::Orientation;
 using ClipperLib::jtRound;
 using ClipperLib::ptSubject;
 using ClipperLib::ptClip;
 using ClipperLib::Path;
 using ClipperLib::Paths;
+using ClipperLib::PolyNode;
+using ClipperLib::PolyTree;
 using ClipperLib::SimplifyPolygons;
 
 // TODO: Rename height to thickness and elevation.
-// TODO: All cuts should be masked by the boundary.
-// TOOD: Remove redundant segments (one above the other).
 
 // By convention all paths are type EvenOdd.
+// TODO: Add longer description of how this works.
 
 #define MUST_USE_RESULT __attribute__((warn_unused_result))
 
@@ -45,6 +52,8 @@ namespace {
     double material_height = -1.;
     double non_overlap = .9;  // Needs a better name
     std::string svg_path;
+    std::string output_ps_path;
+    std::string output_nc_path;
   };
 
   void PrintUsage(FILE *stream, const char *program_name, int exit_code) {
@@ -53,7 +62,9 @@ namespace {
             "  -h  --help             Display this usage information.\n"
             "  -c --color-height=<hex color>:<height>\n"
             "  -d --diameter=DIAMETER Set the tool DIAMETER.\n"
-            "  -m --material-height=H Material thickness.\n");
+            "  -m --material-height=H Material thickness.\n"
+            "  -n --nc-file=PATH      Write the cut plan to a .nc file.\n"
+            "  -p --ps-file=PATH      Write the cut plan to a .ps file.\n");
     exit(exit_code);
   }
 
@@ -85,10 +96,12 @@ namespace {
       {"color-height", required_argument, NULL, 'c'},
       {"diameter", required_argument, NULL, 'd'},
       {"material-height", required_argument, NULL, 'm'},
+      {"nc-file", required_argument, NULL, 'n'},
+      {"ps-file", required_argument, NULL, 'p'},
       {NULL, 0, NULL, 0},
     };
     while ((c = getopt_long(
-                argc, argv, "hc:d:m:", long_options, nullptr)) != -1) {
+                argc, argv, "hc:d:m:n:p:", long_options, nullptr)) != -1) {
       switch (c) {
       case 'h':        
         PrintUsage(stderr, program_name, EXIT_SUCCESS);
@@ -104,6 +117,12 @@ namespace {
         break;
       case 'm':
         config.material_height = atof(optarg);
+        break;
+      case 'n':
+        config.output_nc_path = optarg;
+        break;
+      case 'p':
+        config.output_ps_path = optarg;
         break;
       }
     }
@@ -300,7 +319,7 @@ namespace {
         }
         Paths &layer_paths = (*layers)[height_itr->second];
         if (!UnionInto(paths, &layer_paths)) {
-            fprintf(stderr, "unable merge paths in a common layer.\n");
+            fprintf(stderr, "unable to merge paths into a common layer.\n");
             return false;
         }
       }
@@ -308,8 +327,8 @@ namespace {
     return true;
   }
 
-  bool SameOrInside(const Path &, const Path &) MUST_USE_RESULT;
-  bool SameOrInside(const Path &inner, const Path &outer) {
+  bool OnOrInside(const Path &, const Path &) MUST_USE_RESULT;
+  bool OnOrInside(const Path &inner, const Path &outer) {
     for (const auto &pt : inner) {
       if (PointInPolygon(pt, outer) == 0)
         return false;  // point outside
@@ -346,7 +365,7 @@ namespace {
     co.Execute(*result, InchesToQuanta(amount));
   }
 
-  // Offset a path to a polygon.
+  // Offset a path to a polygon representing the removed material.
   void CutToPolygon(const Paths &cut, double radius, Paths *result) {
     ClipperOffset co;
     co.ArcTolerance = kQuantaPerInch / 1000;
@@ -357,18 +376,50 @@ namespace {
 
   bool SubtractFrom(const Paths &, Paths *) MUST_USE_RESULT;
   bool SubtractFrom(const Paths &a, Paths *b) {
+    if (a.empty() || b->empty())
+      return true;
     Clipper c;
     return c.AddPaths(*b, ptSubject, true) &&
       c.AddPaths(a, ptClip, true) &&
       c.Execute(ctDifference, *b);
   }
 
-  void MillEdges(const Config &config,
+  void CopyAndForceOrientation(const PolyNode &node, bool orientation, Paths *out) {
+    for (const auto &child : node.Childs) {
+      out->push_back(child->Contour);
+      if (Orientation(out->back()) != orientation) {
+        Path *b = &out->back();
+        std::reverse(b->begin(), b->end());
+      }
+      CopyAndForceOrientation(*child, !orientation, out);
+    }
+  }
+
+  bool EnforceStandardMilling(Paths *) MUST_USE_RESULT;
+  bool EnforceStandardMilling(Paths *edge_cuts) {
+    // Use Clipper to conver edge_cuts to a PolyTree.
+    Clipper c;
+    PolyTree solution;
+    if (!c.AddPaths(*edge_cuts, ptSubject, true) ||
+        !c.Execute(ctUnion, solution))
+      return false;
+    edge_cuts->clear();
+    CopyAndForceOrientation(solution, true, edge_cuts);
+    return true;
+  }
+
+  bool MillEdges(const Config &,
+                 const Paths &,
+                 Paths *) MUST_USE_RESULT;
+  bool MillEdges(const Config &config,
                  const Paths &higher_layers,
                  Paths *cuts) {
     Paths edge_cuts;
     ComputeOffset(higher_layers, config.diameter * .5, &edge_cuts);
+    if (!EnforceStandardMilling(&edge_cuts))
+      return false;
     cuts->insert(cuts->end(), edge_cuts.begin(), edge_cuts.end());
+    return true;
   }
 
   bool MillSurface(const Config &,
@@ -391,69 +442,125 @@ namespace {
 
       cuts->insert(cuts->end(), cut.begin(), cut.end());
 
-      Paths mask;
-      CutToPolygon(cut, config.diameter * .5, &mask);
-      if (!SubtractFrom(mask, &remaining))
-        return false;
+      if (!remaining.empty()) {
+        Paths mask;
+        CutToPolygon(cut, config.diameter * .5, &mask);
+        if (!SubtractFrom(mask, &remaining))
+          return false;
+      }
     }
     return true;
   }
 
+  struct LayerCuts {
+    // Direction of edge cuts is important.
+    Paths edges;
+
+    // Direction of surface cuts is not important.
+    Paths surface;
+  };
+
   bool ComputeCuts(const Config &,
                    const std::map<double, Paths> &,
-                   std::map<double, Paths> *) MUST_USE_RESULT;
+                   std::map<double, LayerCuts> *) MUST_USE_RESULT;
   bool ComputeCuts(const Config &config,
                    const std::map<double, Paths> &layers,
-                   std::map<double, Paths> *height_to_cuts) {
+                   std::map<double, LayerCuts> *height_to_cuts) {
     Paths higher_layer_union;
     for (auto iter = layers.rbegin(); iter != layers.rend(); ++iter) {
       const double height = iter->first;
       const Paths &polygons = iter->second;
       if (height < config.material_height) {
         Paths mill_area = polygons;
-        Paths *cuts = &(*height_to_cuts)[height];
+        LayerCuts *cuts = &(*height_to_cuts)[height];
         if (!higher_layer_union.empty()) {
           // Mill the edges of the layer above.
-          MillEdges(config, higher_layer_union, cuts);
+          if (!MillEdges(config, higher_layer_union, &cuts->edges))
+            return false;
 
           Paths tmp;
           ComputeOffset(higher_layer_union, config.diameter, &tmp);
           if (!SubtractFrom(tmp, &mill_area))
             return false;
         }
-        if (!MillSurface(config, mill_area, cuts))
+        if (!MillSurface(config, mill_area, &cuts->surface))
           return false;
       }
       if (!UnionInto(polygons, &higher_layer_union))
         return false;
     }
-    MillEdges(config, higher_layer_union, &(*height_to_cuts)[0]);
-    return true;
+    return MillEdges(config, higher_layer_union, &(*height_to_cuts)[0].edges);
   }
 
-  void ToDebugPs(const std::map<double, Paths> &height_to_cuts) {
-    FILE *fp = fopen("debug.ps", "w");
-    if (!fp)
-      return;
+  void ClosedToOpen(Paths *paths) {
+    for (auto &p : *paths) {
+      p.push_back(p.front());
+    }
+  }
 
-    for (const auto &layer : height_to_cuts) {
-      const double color = 1. - layer.first;
-      for (const auto &cut : layer.second) {
-        fprintf(fp, "0.2 setlinewidth\n");
-        for (const auto &pt : cut) {
-          fprintf(fp, "%f %f %s\n",
-                  QuantaToInches(pt.X) * 72,
-                  QuantaToInches(pt.Y) * 72,
-                  &pt == &*cut.begin() ? "newpath moveto" : "lineto");
-        }
-        fprintf(fp, "closepath\n");
-        fprintf(fp, "%f setgray\n", color);
-        fprintf(fp, "stroke\n");
+  bool TrimCutsToBoundingBox(cInt, cInt, Paths *) MUST_USE_RESULT;
+  bool TrimCutsToBoundingBox(cInt width, cInt height, Paths *cuts) {
+    const Path bbox{{0, 0}, {width, 0}, {width, height}, {0, height}};
+    Paths saved;
+    saved.reserve(cuts->size());
+    Clipper c;
+    for (auto &cut : *cuts) {
+      // This test is done to work around a clipper bug where segments are
+      // dropped from open paths with the final point the same as the starting
+      // point in the *output*. This only happens with paths that aren't clipped
+      // at all.
+      if (OnOrInside(cut, bbox)) {
+        saved.push_back(Path());
+        saved.back().swap(cut);
+      } else {
+        if (!c.AddPath(cut, ptSubject, false))
+          return false;
       }
+    }
+    cuts->clear();
+    PolyTree solution;
+    if (!c.AddPath(bbox, ptClip, true) ||
+        !c.Execute(ctIntersection, solution))
+      return false;
+    OpenPathsFromPolyTree(solution, *cuts);
+    cuts->insert(cuts->end(), saved.begin(), saved.end());
+    return true;    
+  }
+
+  void AddOpenPathsToPs(const Paths &paths, FILE *fp) {
+    for (const auto &cut : paths) {
+      fprintf(fp, "0.2 setlinewidth\n");
+      for (const auto &pt : cut) {
+        fprintf(fp, "%f %f %s\n",
+                QuantaToInches(pt.X) * 72,
+                QuantaToInches(pt.Y) * 72,
+                &pt == &*cut.begin() ? "newpath moveto" : "lineto");
+      }
+      fprintf(fp, "%f setgray\n", 1.);
+      fprintf(fp, "stroke\n");
+    }
+  }
+
+  void WriteCutsToPs(const std::string &path,
+                     const std::map<double, LayerCuts> &height_to_cuts) {
+    FILE *fp = fopen(path.c_str(), "w");
+    if (!fp) {
+      perror(path.c_str());
+      return;
+    }
+    fprintf(fp, "1 setgray clippath fill\n");
+    for (const auto &layer : height_to_cuts) {
+      // const double color = 1. - layer.first;
+      AddOpenPathsToPs(layer.second.edges, fp);
+      AddOpenPathsToPs(layer.second.surface, fp);
     }
 
     fclose(fp);
   }
+
+  // void WriteCutsToNc(const std::string &,
+  //                    const std::map<double, Paths> &) {
+  // }
 }  // namespace
 
 int main(int argc, char *argv[]) {
@@ -463,14 +570,76 @@ int main(int argc, char *argv[]) {
     return EXIT_FAILURE;
 
   std::map<double, Paths> layers;
-  bool r = SvgToPolygons(*diagram, config, &layers);
-  svgtiny_free(diagram);
-
-  for (auto iter : layers) {
-    SimplifyPolygons(iter.second);
+  const cInt width = SvgToQuanta(diagram->width);
+  const cInt height = SvgToQuanta(diagram->height);
+  {
+    const bool r = SvgToPolygons(*diagram, config, &layers);
+    svgtiny_free(diagram);
+    if (!r) {
+      fprintf(stderr, "svg processing failed.\n");
+      return EXIT_FAILURE;
+    }
   }
-  std::map<double, Paths> height_to_cuts;
-  r = r && ComputeCuts(config, layers, &height_to_cuts);
-  ToDebugPs(height_to_cuts);
-  return r ? EXIT_SUCCESS : EXIT_FAILURE;
+
+  // Compute layer by layer cuts as closed loops.
+  std::map<double, LayerCuts> height_to_cuts;
+  if (!ComputeCuts(config, layers, &height_to_cuts)) {
+    fprintf(stderr, "failed to compute cut paths.\n");
+    return EXIT_FAILURE;
+  }
+
+  for (auto &iter : height_to_cuts) {
+    // Convert the cuts to open seqment sequences.
+    ClosedToOpen(&iter.second.edges);
+    ClosedToOpen(&iter.second.surface);
+
+    // Clip to the size of the input drawing.
+    if (!TrimCutsToBoundingBox(width, height, &iter.second.edges) ||
+        !TrimCutsToBoundingBox(width, height, &iter.second.surface)) {
+      fprintf(stderr, "failed trimming cuts to bounding box.\n");
+      return EXIT_FAILURE;
+    }
+  }
+
+  // When multiple cuts are on top of each other, only keep the bottom cut.
+  {
+    UniqSeg uniq_seg;
+    for (auto &iter : height_to_cuts) {
+      Paths *edges = &iter.second.edges;
+      Paths new_edges;
+      for (const Path &path : *edges) {
+        for (size_t i = 0; i + 1 < path.size(); ++i) {
+          Paths tmp;
+          uniq_seg.RemoveRedundant(path[i], path[i + 1], &tmp);
+          for (const Path &p : tmp) {
+            assert(p.size() == 2);
+            if (!new_edges.empty() && new_edges.back().back() == p.front()) {
+              new_edges.back().push_back(p.back());
+            } else {
+              new_edges.push_back(p);
+            }
+          }
+        }
+      }
+      edges->swap(new_edges);
+    }
+  }
+
+  // When cuts are too deep to do in a single pass, duplicate them at higher
+  // levels.
+  // TODO
+
+  // Compute a full path plan.
+  // TODO
+
+  // Write result to files.
+  if (!config.output_ps_path.empty()) {
+    WriteCutsToPs(config.output_ps_path, height_to_cuts);
+  }
+
+  // if (!config.output_nc_path.empty()) {
+  //   WriteCutsToNc(config.output_nc_path, height_to_cuts);
+  // }
+
+  return EXIT_SUCCESS;
 }
