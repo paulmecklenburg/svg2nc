@@ -7,6 +7,7 @@
 #include <assert.h>
 #include <getopt.h>
 #include <inttypes.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/types.h>
@@ -51,6 +52,7 @@ namespace {
     double diameter = -1.;
     double material_height = -1.;
     double non_overlap = .9;  // Needs a better name
+    double max_pass_depth = .25;
     std::string svg_path;
     std::string output_ps_path;
     std::string output_nc_path;
@@ -64,7 +66,8 @@ namespace {
             "  -d --diameter=DIAMETER Set the tool DIAMETER.\n"
             "  -m --material-height=H Material thickness.\n"
             "  -n --nc-file=PATH      Write the cut plan to a .nc file.\n"
-            "  -p --ps-file=PATH      Write the cut plan to a .ps file.\n");
+            "  -p --ps-file=PATH      Write the cut plan to a .ps file.\n"
+            "  -x --max-depth=DEPTH   Maximum depth to cut in a single pass.\n");
     exit(exit_code);
   }
 
@@ -98,10 +101,11 @@ namespace {
       {"material-height", required_argument, NULL, 'm'},
       {"nc-file", required_argument, NULL, 'n'},
       {"ps-file", required_argument, NULL, 'p'},
+      {"max-depth", required_argument, NULL, 'x'},
       {NULL, 0, NULL, 0},
     };
     while ((c = getopt_long(
-                argc, argv, "hc:d:m:n:p:", long_options, nullptr)) != -1) {
+                argc, argv, "hc:d:m:n:p:x:", long_options, nullptr)) != -1) {
       switch (c) {
       case 'h':        
         PrintUsage(stderr, program_name, EXIT_SUCCESS);
@@ -123,6 +127,9 @@ namespace {
         break;
       case 'p':
         config.output_ps_path = optarg;
+        break;
+      case 'x':
+        config.max_pass_depth = atof(optarg);
         break;
       }
     }
@@ -225,6 +232,43 @@ namespace {
     return InchesToQuanta(SvgToInches(x));
   }
 
+  void BezierPoint(double x0, double y0,
+                   double x1, double y1,
+                   double x2, double y2,
+                   double x3, double y3,
+                   double t,
+                   double *x, double *y) {
+    const double omt = 1. - t;
+    const double a = omt * omt * omt;
+    const double b = 3. * omt * omt * t;
+    const double c = 3. * omt * t * t;
+    const double d = t * t *t;
+    *x = a * x0 + b * x1 + c * x2 + d * x3;
+    *y = a * y0 + b * y1 + c * y2 + d * y3;
+  }
+
+  void AddBezierPointsToPath(double x0, double y0,
+                             double x1, double y1,
+                             double x2, double y2,
+                             double x3, double y3,
+                             double t0, double t2,
+                             Path *output) {
+    double a0, b0, a1, b1, a2, b2;
+    const double t1 = (t0 + t2) * .5;
+    BezierPoint(x0, y0, x1, y1, x2, y2, x3, y3, t0, &a0, &b0);
+    BezierPoint(x0, y0, x1, y1, x2, y2, x3, y3, t1, &a1, &b1);
+    BezierPoint(x0, y0, x1, y1, x2, y2, x3, y3, t2, &a2, &b2);
+    const double a_err = (a0 + a2) * .5 - a1;
+    const double b_err = (b0 + b2) * .5 - b1;
+    const double err = sqrt(a_err * a_err + b_err * b_err);
+    if (err > .001) {
+      AddBezierPointsToPath(x0, y0, x1, y1, x2, y2, x3, y3, t0, t1, output);
+      AddBezierPointsToPath(x0, y0, x1, y1, x2, y2, x3, y3, t1, t2, output);
+    } else {
+      output->push_back(IntPoint(InchesToQuanta(a2), InchesToQuanta(b2)));
+    }
+  }
+
   bool ConvertPath(const float *, unsigned int, double, Paths *) MUST_USE_RESULT;
   bool ConvertPath(const float *input, unsigned int length, double svg_height, Paths *output) {
     Path *path = nullptr;
@@ -253,21 +297,22 @@ namespace {
         j += 1;
         break;
       case svgtiny_PATH_BEZIER:
-        // TOOD: Add support for bezier.
-        fprintf(stderr, "(skipping) bezier..\n");
-        if (!path || (j + 7) > length)
-          return false;
-        // http://cairographics.org/manual/cairo-Paths.html#cairo-curve-to
-        // http://en.wikipedia.org/wiki/B%C3%A9zier_curve
-        // cairo_curve_to(cr,
-        //                scale * path->path[j + 1],
-        //                scale * path->path[j + 2],
-        //                scale * path->path[j + 3],
-        //                scale * path->path[j + 4],
-        //                scale * path->path[j + 5],
-        //                scale * path->path[j + 6]);
-        j += 7;
-        break;
+        {
+          if (!path || path->empty() || (j + 7) > length)
+            return false;
+          const double x0 = QuantaToInches(path->back().X);
+          const double y0 = QuantaToInches(path->back().Y);
+          AddBezierPointsToPath(x0, y0,
+                                SvgToInches(input[j+1]),
+                                SvgToInches(svg_height - input[j+2]),
+                                SvgToInches(input[j+3]),
+                                SvgToInches(svg_height - input[j+4]),
+                                SvgToInches(input[j+5]),
+                                SvgToInches(svg_height - input[j+6]),
+                                0., 1., path);
+          j += 7;
+          break;
+        }
       default:
         return false;
       }
@@ -494,7 +539,9 @@ namespace {
 
   void ClosedToOpen(Paths *paths) {
     for (auto &p : *paths) {
-      p.push_back(p.front());
+      if (p.back() != p.front()) {
+        p.push_back(p.front());
+      }
     }
   }
 
@@ -625,9 +672,21 @@ int main(int argc, char *argv[]) {
     }
   }
 
+  // TODO: Need a data structure to hold {cuts (directed or not), heights, and
+  // ordering information}.
+
   // When cuts are too deep to do in a single pass, duplicate them at higher
   // levels.
-  // TODO
+  for (const auto &iter : height_to_cuts) {
+    const double height = iter.first;
+    const int passes = ceil((config.material_height - height) /
+                            config.max_pass_depth);
+    for (int i = 0; i < passes; ++i) {
+      // TODO
+    }
+  }
+
+  // Split long cuts into shorter ones.
 
   // Compute a full path plan.
   // TODO
