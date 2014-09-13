@@ -1,10 +1,13 @@
 #include <algorithm>
+#include <array>
+#include <limits>
 #include <map>
 #include <set>
 #include <string>
 #include <utility>
 
 #include <assert.h>
+#include <ANN/ANN.h>
 #include <getopt.h>
 #include <inttypes.h>
 #include <math.h>
@@ -28,9 +31,11 @@ using ClipperLib::ctDifference;
 using ClipperLib::ctIntersection;
 using ClipperLib::etClosedLine;
 using ClipperLib::etClosedPolygon;
+using ClipperLib::etOpenButt;
 using ClipperLib::IntPoint;
 using ClipperLib::Orientation;
 using ClipperLib::jtRound;
+using ClipperLib::jtSquare;
 using ClipperLib::ptSubject;
 using ClipperLib::ptClip;
 using ClipperLib::Path;
@@ -402,19 +407,46 @@ namespace {
   //   return true;
   // }
 
-  void ComputeOffset(const Paths &paths, double amount, Paths *result) {
-    ClipperOffset co;
-    co.ArcTolerance = kQuantaPerInch / 1000;
-    // TODO: Do we need to check orientations here?
-    co.AddPaths(paths, jtRound, etClosedPolygon);
-    co.Execute(*result, InchesToQuanta(amount));
+  void CopyAndForceOrientation(const PolyNode &node, bool orientation, Paths *out) {
+    for (const auto &child : node.Childs) {
+      out->push_back(child->Contour);
+      if (Orientation(out->back()) != orientation) {
+        Path *b = &out->back();
+        std::reverse(b->begin(), b->end());
+      }
+      CopyAndForceOrientation(*child, !orientation, out);
+    }
   }
 
-  // Offset a path to a polygon representing the removed material.
-  void CutToPolygon(const Paths &cut, double radius, Paths *result) {
+  bool CopyAndForceOrientation(const Paths &paths, bool orientation, Paths *out) {
+    // Use Clipper to convert edge_cuts to a PolyTree.
+    Clipper c;
+    PolyTree solution;
+    if (!c.AddPaths(paths, ptSubject, true) ||
+        !c.Execute(ctUnion, solution))
+      return false;
+    out->clear();
+    CopyAndForceOrientation(solution, orientation, out);
+    return true;
+  }
+
+  bool ComputeOffset(const Paths &, double, Paths *) MUST_USE_RESULT;
+  bool ComputeOffset(const Paths &paths, double amount, Paths *result) {
+    Paths tmp_paths;
+    if (!CopyAndForceOrientation(paths, true, &tmp_paths))
+      return false;
+
     ClipperOffset co;
     co.ArcTolerance = kQuantaPerInch / 1000;
-    // TODO: Do we need to check orientations here?
+    co.AddPaths(tmp_paths, jtRound, etClosedPolygon);
+    co.Execute(*result, InchesToQuanta(amount));
+    return true;
+  }
+
+  void CutToPolygon(const Paths &cut, double radius, Paths *result) {
+    // Offset a path to a polygon representing the removed material.
+    ClipperOffset co;
+    co.ArcTolerance = kQuantaPerInch / 1000;
     co.AddPaths(cut, jtRound, etClosedLine);
     co.Execute(*result, InchesToQuanta(radius));
   }
@@ -429,28 +461,9 @@ namespace {
       c.Execute(ctDifference, *b);
   }
 
-  void CopyAndForceOrientation(const PolyNode &node, bool orientation, Paths *out) {
-    for (const auto &child : node.Childs) {
-      out->push_back(child->Contour);
-      if (Orientation(out->back()) != orientation) {
-        Path *b = &out->back();
-        std::reverse(b->begin(), b->end());
-      }
-      CopyAndForceOrientation(*child, !orientation, out);
-    }
-  }
-
   bool EnforceStandardMilling(Paths *) MUST_USE_RESULT;
   bool EnforceStandardMilling(Paths *edge_cuts) {
-    // Use Clipper to conver edge_cuts to a PolyTree.
-    Clipper c;
-    PolyTree solution;
-    if (!c.AddPaths(*edge_cuts, ptSubject, true) ||
-        !c.Execute(ctUnion, solution))
-      return false;
-    edge_cuts->clear();
-    CopyAndForceOrientation(solution, true, edge_cuts);
-    return true;
+    return CopyAndForceOrientation(*edge_cuts, true, edge_cuts);
   }
 
   bool MillEdges(const Config &,
@@ -460,24 +473,116 @@ namespace {
                  const Paths &higher_layers,
                  Paths *cuts) {
     Paths edge_cuts;
-    ComputeOffset(higher_layers, config.diameter * .5, &edge_cuts);
+    if (!ComputeOffset(higher_layers, config.diameter * .5, &edge_cuts))
+      return false;
     if (!EnforceStandardMilling(&edge_cuts))
       return false;
     cuts->insert(cuts->end(), edge_cuts.begin(), edge_cuts.end());
     return true;
   }
 
+  bool CanSlide(const IntPoint &p0, const IntPoint &p1,
+                double radius, const Paths &layers_above) {
+    Paths swept_path;
+    {  // Create a swept path for the tool. Ideal would use 'jtRound' with
+      // exactly radius. Instead etOpenButt is used. We assume that the start
+      // and end are already safe and make the path a wider (kEpsilon) to give
+      // a bit of extra space. Meatspace is not as precise as math.
+      ClipperOffset co;
+      const Path line{p0, p1};
+      co.AddPath(line, jtSquare /* doesn't actually matter */, etOpenButt);
+      const double kEpsilon = 0.005;
+      co.Execute(swept_path, InchesToQuanta(radius + kEpsilon));
+    }
+
+    Clipper c;
+    if (!c.AddPaths(layers_above, ptSubject, true) ||
+        !c.AddPaths(swept_path, ptClip, true))
+      return false;  // TODO: report error.
+
+    Paths intersection;
+    return c.Execute(ctIntersection, intersection) && intersection.empty();
+  }
+
+  void MergeCut(const Path &cut,
+                const Paths &layers_above,
+                double diameter,
+                Paths *all_cuts) {
+    if (all_cuts->empty()) {
+      all_cuts->push_back(cut);
+      return;
+    }
+
+    std::vector<std::array<ANNcoord, 2>> point_data;
+    for (const auto &p : *all_cuts) {
+      for (const auto &pt : p) {
+        point_data.push_back(std::array<ANNcoord, 2>{
+            QuantaToInches(pt.X), QuantaToInches(pt.Y)});
+      }
+    }
+
+    std::vector<ANNpoint> points;
+    for (auto &pd : point_data) {
+      points.push_back(pd.data());
+    }
+
+    ANNkd_tree tree(points.data(), points.size(), 2);
+
+    ANNidx nearest_idx = 0;
+    ANNdist nearest_dist = std::numeric_limits<ANNdist>::max();
+    size_t cut_pos = 0;
+    for (size_t i = 0; i < cut.size(); ++i) {
+      const auto &pt = cut[i];
+      std::array<ANNcoord, 2> q{QuantaToInches(pt.X), QuantaToInches(pt.Y)};
+      ANNidx idx;
+      ANNdist dist;
+      tree.annkSearch(q.data(), 1, &idx, &dist);
+      if (dist < nearest_dist) {
+        nearest_dist = dist;
+        nearest_idx = idx;
+        cut_pos = i;
+      }
+    }
+
+    Path *dst = nullptr;
+    for (auto &p : *all_cuts) {
+      if (nearest_idx < ANNidx(p.size())) {
+        dst = &p;
+        break;
+      }
+      nearest_idx -= p.size();
+    }
+
+    const int kMaxSlideDiameters = 2;
+    if (sqrt(nearest_dist) <= diameter * kMaxSlideDiameters &&
+        CanSlide(cut[cut_pos], (*dst)[nearest_idx], diameter * .5, layers_above)) {
+      Path to_insert;
+      to_insert.push_back((*dst)[nearest_idx]);
+      to_insert.insert(to_insert.end(), cut.begin() + cut_pos, cut.end());
+      to_insert.insert(to_insert.end(), cut.begin(), cut.begin() + cut_pos + 1);
+      dst->insert(dst->begin() + nearest_idx, to_insert.begin(), to_insert.end());
+    } else {
+      all_cuts->push_back(cut);
+    }
+  }
+
   bool MillSurface(const Config &,
+                   const Paths &,
                    const Paths &,
                    Paths *) MUST_USE_RESULT;
   bool MillSurface(const Config &config,
                    const Paths &surface,
+                   const Paths &layers_above,
                    Paths *cuts) {
     Paths remaining(surface);
     while (!remaining.empty()) {
       // Shrink by less than radius.
       Paths cut;
-      ComputeOffset(remaining, -(config.diameter * .5 * config.non_overlap), &cut);
+      if (!ComputeOffset(remaining,
+                         -(config.diameter * .5 * config.non_overlap),
+                         &cut)) {
+        return false;
+      }
 
       // In some cases an area smaller than the bit is left and cut is empty.
       // To make sure this material is removed we cut the outer edge. This is
@@ -485,7 +590,9 @@ namespace {
       if (cut.empty())
         cut.swap(remaining);
 
-      cuts->insert(cuts->end(), cut.begin(), cut.end());
+      for (const auto &c : cut) {
+        MergeCut(c, layers_above, config.diameter, cuts);
+      }
 
       if (!remaining.empty()) {
         Paths mask;
@@ -524,11 +631,12 @@ namespace {
             return false;
 
           Paths tmp;
-          ComputeOffset(higher_layer_union, config.diameter, &tmp);
+          if (!ComputeOffset(higher_layer_union, config.diameter, &tmp))
+            return false;
           if (!SubtractFrom(tmp, &mill_area))
             return false;
         }
-        if (!MillSurface(config, mill_area, &cuts->surface))
+        if (!MillSurface(config, mill_area, higher_layer_union, &cuts->surface))
           return false;
       }
       if (!UnionInto(polygons, &higher_layer_union))
@@ -597,7 +705,6 @@ namespace {
     }
     fprintf(fp, "1 setgray clippath fill\n");
     for (const auto &layer : height_to_cuts) {
-      // const double color = 1. - layer.first;
       AddOpenPathsToPs(layer.second.edges, fp);
       AddOpenPathsToPs(layer.second.surface, fp);
     }
@@ -686,10 +793,10 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  // Split long cuts into shorter ones.
-
-  // Compute a full path plan.
-  // TODO
+  // Path plan.
+  // For all eligible paths, keep a heap sorted by path length. Take the
+  // shortest path, merge it with the nearest path that hasn't been processed.
+  // Insert any paths that are now possible to process. Repeat.
 
   // Write result to files.
   if (!config.output_ps_path.empty()) {
