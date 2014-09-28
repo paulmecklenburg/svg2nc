@@ -45,48 +45,55 @@ using ClipperLib::PolyNode;
 using ClipperLib::PolyTree;
 using ClipperLib::SimplifyPolygons;
 
-// TODO: Rename height to thickness and elevation.
-
-// By convention all paths are type EvenOdd.
-// TODO: Add longer description of how this works.
+// TODO: die() instead of returning false.
 
 #define MUST_USE_RESULT __attribute__((warn_unused_result))
 
 namespace {
   struct Config {
-    std::map<uint32_t, double> color_to_height;
+    std::map<uint32_t, double> color_to_elevation;
     double diameter = -1.;
-    double material_height = -1.;
-    double non_overlap = .9;  // Needs a better name
+    double material_thickness = -1.;
+    double mill_overlap = .1;
     double max_pass_depth = .25;
+    double through_elevation = 0;
     std::string svg_path;
     std::string output_ps_path;
     std::string output_nc_path;
   };
 
   void PrintUsage(FILE *stream, const char *program_name, int exit_code) {
-    fprintf(stream, "Usage:  %s [OPTION]... [FILE]\n", program_name);
-    fprintf(stream,
-            "  -h  --help             Display this usage information.\n"
-            "  -c --color-height=<hex color>:<height>\n"
-            "  -d --diameter=DIAMETER Set the tool DIAMETER.\n"
-            "  -m --material-height=H Material thickness.\n"
-            "  -n --nc-file=PATH      Write the cut plan to a .nc file.\n"
-            "  -p --ps-file=PATH      Write the cut plan to a .ps file.\n"
-            "  -x --max-depth=DEPTH   Maximum depth to cut in a single pass.\n");
+    fprintf(stream, "Usage:  %s [OPTION]... [SVG FILE]\n", program_name);
+    fprintf(
+        stream,
+        "  -h  --help                 Display this usage information.\n"
+        "  -c --color-elevation=<hex color>:<inches>\n"
+        "     Specify the elevation for a color.\n"
+        "  -d --diameter=<inches>     Set the tool DIAMETER.\n"
+        "  -m --material-thickness=<inches>\n"
+        "     Specify the material thickness.\n"
+        "  -n --nc-file=<path>        Write the cut plan to a .nc file.\n"
+        "  -o --mill-overlap=<fraction>\n"
+        "     Fraction of a cut to overlap with adjacent cuts.\n"
+        "  -p --ps-file=<path>        Write the cut plan to a .ps file.\n"
+        "  -t --through-elevatation=<inches>\n"
+        "     The elevation to use while cutting holes and outlines.\n"
+        "  -x --max-pass-depth=<depth>\n"
+        "     The maximum depth to cut in a single pass.\n"
+    );
     exit(exit_code);
   }
 
-  void ParseColorHeightPair(const char *optarg,
-                            std::map<uint32_t, double> *color_to_height) {
+  void ParseColorElevationPair(const char *optarg,
+                            std::map<uint32_t, double> *color_to_elevation) {
     uint32_t color;
-    double height;
-    if (2 == sscanf(optarg, "%x:%lg", &color, &height)) {
-      if (height <= 0) {
-        fprintf(stderr, "Height values must be greater than zero.\n");
+    double elevation;
+    if (2 == sscanf(optarg, "%x:%lg", &color, &elevation)) {
+      if (elevation <= 0) {
+        fprintf(stderr, "Elevation values must be greater than zero.\n");
         exit(EXIT_FAILURE);
       }
-      (*color_to_height)[color] = height;
+      (*color_to_elevation)[color] = elevation;
     } else {
       fprintf(stderr,
               "'%s' does not match the expected format "
@@ -102,12 +109,14 @@ namespace {
     int c;
     static const struct option long_options[] = {
       {"help", no_argument, NULL, 'h'},
-      {"color-height", required_argument, NULL, 'c'},
+      {"color-elevation", required_argument, NULL, 'c'},
       {"diameter", required_argument, NULL, 'd'},
-      {"material-height", required_argument, NULL, 'm'},
+      {"material-thickness", required_argument, NULL, 'm'},
+      {"max-pass-depth", required_argument, NULL, 'x'},
       {"nc-file", required_argument, NULL, 'n'},
+      {"mill-overlap", required_argument, NULL, 'o'},
       {"ps-file", required_argument, NULL, 'p'},
-      {"max-depth", required_argument, NULL, 'x'},
+      {"through-elevation", required_argument, NULL, 't'},
       {NULL, 0, NULL, 0},
     };
     while ((c = getopt_long(
@@ -120,22 +129,28 @@ namespace {
         PrintUsage(stderr, program_name, EXIT_FAILURE);
         break;
       case 'c':
-        ParseColorHeightPair(optarg, &config.color_to_height);
+        ParseColorElevationPair(optarg, &config.color_to_elevation);
         break;
       case 'd':
         config.diameter = atof(optarg);
         break;
       case 'm':
-        config.material_height = atof(optarg);
+        config.material_thickness = atof(optarg);
         break;
       case 'n':
         config.output_nc_path = optarg;
+        break;
+      case 'o':
+        config.mill_overlap = atof(optarg);
         break;
       case 'p':
         config.output_ps_path = optarg;
         break;
       case 'x':
         config.max_pass_depth = atof(optarg);
+        break;
+      case 't':
+        config.through_elevation = atof(optarg);
         break;
       }
     }
@@ -144,18 +159,32 @@ namespace {
       PrintUsage(stderr, program_name, EXIT_FAILURE);
     }
     config.svg_path = argv[optind];
-    if (config.material_height <= 0) {
-      for (const auto &iter : config.color_to_height) {
-        config.material_height = std::max(config.material_height, iter.second);
+    if (config.material_thickness <= 0) {
+      for (const auto &iter : config.color_to_elevation) {
+        config.material_thickness = std::max(config.material_thickness,
+                                             iter.second);
       }
-      if (config.material_height <= 0) {
-        fprintf(stderr,
-                "Material height (thickness) must be greater than zero.\n");
+      if (config.material_thickness <= 0) {
+        fprintf(stderr, "Material thickness must be greater than zero.\n");
         exit(EXIT_FAILURE);
       }
     }
     if (config.diameter <= 0) {
-      fprintf(stderr, "Bit diameter must be specified and greater than zero.\n");
+      fprintf(stderr, "Bit diameter must be greater than zero.\n");
+      exit(EXIT_FAILURE);
+    }
+    if (config.through_elevation > 0) {
+      fprintf(stderr, "Through elevation cannot be greater than zero.\n");
+      exit(EXIT_FAILURE);
+    }
+    if (config.mill_overlap < 0 || config.mill_overlap >= 1.) {
+      fprintf(stderr,
+              "Mill overlap must be greater than or equal to zero and less than"
+              " one.\n");
+      exit(EXIT_FAILURE);
+    }
+    if (config.max_pass_depth <= 0) {
+      fprintf(stderr, "Max pass depth must be greater than zero.\n");
       exit(EXIT_FAILURE);
     }
     return config;
@@ -277,6 +306,7 @@ namespace {
 
   bool ConvertPath(const float *, unsigned int, double, Paths *) MUST_USE_RESULT;
   bool ConvertPath(const float *input, unsigned int length, double svg_height, Paths *output) {
+    // svg_height is used to invert the y axis.
     Path *path = nullptr;
     unsigned int j;
     for (j = 0; j < length; ) {
@@ -289,7 +319,6 @@ namespace {
       case svgtiny_PATH_LINE:
         if (!path || (j + 3) > length)
           return false;
-        // Invert y axis.
         path->push_back(IntPoint(SvgToQuanta(input[j+1]),
                                  SvgToQuanta(svg_height - input[j+2])));
         j += 3;
@@ -363,12 +392,12 @@ namespace {
           fprintf(stderr, "unable to process path.\n");
           return false;
         }
-        const auto height_itr = config.color_to_height.find(shape.fill);
-        if (height_itr == config.color_to_height.end()) {
-          fprintf(stderr, "no height mapped for: %06X\n", shape.fill);
+        const auto elevation_itr = config.color_to_elevation.find(shape.fill);
+        if (elevation_itr == config.color_to_elevation.end()) {
+          fprintf(stderr, "no elevation mapped for: %06X\n", shape.fill);
           return false;
         }
-        Paths &layer_paths = (*layers)[height_itr->second];
+        Paths &layer_paths = (*layers)[elevation_itr->second];
         if (!UnionInto(paths, &layer_paths)) {
             fprintf(stderr, "unable to merge paths into a common layer.\n");
             return false;
@@ -454,6 +483,9 @@ namespace {
 
   bool CanSlide(const IntPoint &p0, const IntPoint &p1,
                 double radius, const Paths &layers_above) {
+    if (layers_above.empty())
+      return true;
+
     Paths swept_path;
     {  // Create a swept path for the tool. Ideal would use 'jtRound' with
       // exactly radius. Instead etOpenButt is used. We assume that the start
@@ -550,7 +582,7 @@ namespace {
       // Shrink by less than radius.
       Paths cut;
       if (!ComputeOffset(remaining,
-                         -(config.diameter * .5 * config.non_overlap),
+                         -(config.diameter * .5 * (1. - config.mill_overlap)),
                          &cut)) {
         return false;
       }
@@ -588,14 +620,14 @@ namespace {
                    std::map<double, LayerCuts> *) MUST_USE_RESULT;
   bool ComputeCuts(const Config &config,
                    const std::map<double, Paths> &layers,
-                   std::map<double, LayerCuts> *height_to_cuts) {
+                   std::map<double, LayerCuts> *elevation_to_cuts) {
     Paths higher_layer_union;
     for (auto iter = layers.rbegin(); iter != layers.rend(); ++iter) {
-      const double height = iter->first;
+      const double elevation = iter->first;
       const Paths &polygons = iter->second;
-      if (height < config.material_height) {
+      if (elevation < config.material_thickness) {
         Paths mill_area = polygons;
-        LayerCuts *cuts = &(*height_to_cuts)[height];
+        LayerCuts *cuts = &(*elevation_to_cuts)[elevation];
         if (!higher_layer_union.empty()) {
           // Mill the edges of the layer above.
           if (!MillEdges(config, higher_layer_union, &cuts->edges))
@@ -613,7 +645,9 @@ namespace {
       if (!UnionInto(polygons, &higher_layer_union))
         return false;
     }
-    return MillEdges(config, higher_layer_union, &(*height_to_cuts)[0].edges);
+    return MillEdges(config,
+                     higher_layer_union,
+                     &(*elevation_to_cuts)[config.through_elevation].edges);
   }
 
   void ClosedToOpen(Paths *paths) {
@@ -665,7 +699,7 @@ namespace {
   }
 
   struct CutPath {
-    double height;
+    double elevation;
     Path path;
   };
 
@@ -698,7 +732,7 @@ namespace {
         const double union_area = fabs(Area(unn[0]));
         if (union_area < perimeter_area + cp_area * .5) {
           bool is_interior = perimeter_area - cp_area > perimeter_area * .00001;
-          if (cp.height > 0. || is_interior) {
+          if (cp.elevation > 0. || is_interior) {
             ResizeGet(parts, i)->interior.push_back(cp);
           } else {
             ResizeGet(parts, i)->perimeter.push_back(cp);
@@ -728,7 +762,7 @@ namespace {
     parts->clear();
     Paths unn;
     for (const auto &cp : all) {
-      if (cp.height <= 0. && cp.path.front() == cp.path.back()) {
+      if (cp.elevation <= 0. && cp.path.front() == cp.path.back()) {
         Paths paths{cp.path};
         paths.front().pop_back();
         if (!UnionInto(paths, &unn))
@@ -742,12 +776,12 @@ namespace {
     return true;
   }
 
-  std::vector<double> PassHeights(const Config &config, double height) {
-    const double delta = config.material_height - height;
+  std::vector<double> PassElevations(const Config &config, double elevation) {
+    const double delta = config.material_thickness - elevation;
     const int passes = ceil(delta / config.max_pass_depth);
     std::vector<double> result;
     for (int i = passes - 1; i >= 0; --i) {
-      result.push_back(i * (delta / passes) + height);
+      result.push_back(i * (delta / passes) + elevation);
     }
     return result;
   }
@@ -786,7 +820,7 @@ namespace {
     }
 
     CutPath new_cp;
-    new_cp.height = cp->height;
+    new_cp.elevation = cp->elevation;
     if (ind == 0) {
       new_cp.path = cp->path;
     } else {
@@ -802,9 +836,8 @@ namespace {
     }
     input->pop_back();
 
-    const double lowest_height = new_cp.height;
-    for (const double &height : PassHeights(config, lowest_height)) {
-      new_cp.height = height;
+    for (const double elevation : PassElevations(config, new_cp.elevation)) {
+      new_cp.elevation = elevation;
       output->push_back(new_cp);
     }
   }
@@ -864,13 +897,13 @@ int main(int argc, char *argv[]) {
   }
 
   // Compute layer by layer cuts as closed loops.
-  std::map<double, LayerCuts> height_to_cuts;
-  if (!ComputeCuts(config, layers, &height_to_cuts)) {
+  std::map<double, LayerCuts> elevation_to_cuts;
+  if (!ComputeCuts(config, layers, &elevation_to_cuts)) {
     fprintf(stderr, "failed to compute cut paths.\n");
     return EXIT_FAILURE;
   }
 
-  for (auto &iter : height_to_cuts) {
+  for (auto &iter : elevation_to_cuts) {
     // Convert the cuts to open seqment sequences.
     ClosedToOpen(&iter.second.edges);
     ClosedToOpen(&iter.second.surface);
@@ -885,7 +918,7 @@ int main(int argc, char *argv[]) {
 
   {  // When multiple cuts are on top of each other, only keep the bottom cut.
     UniqSeg uniq_seg;
-    for (auto &iter : height_to_cuts) {
+    for (auto &iter : elevation_to_cuts) {
       Paths *edges = &iter.second.edges;
       Paths new_edges;
       for (const Path &path : *edges) {
@@ -921,12 +954,12 @@ int main(int argc, char *argv[]) {
   {
     // Fill unordered_cuts with all cuts from all layers.
     std::vector<CutPath> unordered_cuts;
-    for (const auto &layer : height_to_cuts) {
-      const double height = layer.first;
+    for (const auto &layer : elevation_to_cuts) {
+      const double elevation = layer.first;
       for (const auto &p : layer.second.edges)
-        unordered_cuts.push_back(CutPath{height, p});
+        unordered_cuts.push_back(CutPath{elevation, p});
       for (const auto &p : layer.second.surface)
-        unordered_cuts.push_back(CutPath{height, p});
+        unordered_cuts.push_back(CutPath{elevation, p});
     }
 
     std::vector<Part> parts;
@@ -935,6 +968,7 @@ int main(int argc, char *argv[]) {
       return EXIT_FAILURE;      
     }
 
+    // TODO: Make this verbose only and include total path cut time.
     printf("parts %lu\n", parts.size());
 
     for (Part &part : parts) {
