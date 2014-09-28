@@ -23,6 +23,7 @@ extern "C" {
 #include "svgtiny.h"
 }  // extern "C"
 
+using ClipperLib::Area;
 using ClipperLib::cInt;
 using ClipperLib::ctUnion;
 using ClipperLib::Clipper;
@@ -377,36 +378,6 @@ namespace {
     return true;
   }
 
-  bool OnOrInside(const Path &, const Path &) MUST_USE_RESULT;
-  bool OnOrInside(const Path &inner, const Path &outer) {
-    for (const auto &pt : inner) {
-      if (PointInPolygon(pt, outer) == 0)
-        return false;  // point outside
-    }
-    return true;  // All points on or inside.
-  }
-
-  // Assuming all is one or more polygons (which may have holes). Find one
-  // disjoint polygon and copy it and any corresponding holes to island.
-  // bool FindIsland(const Paths &all, Paths *island) {
-  //   island->clear();
-  //   Paths unn;
-  //   for (const Path &path : all) {
-  //     Paths paths{path};
-  //     if (!UnionInto(paths, &unn))
-  //       return false;
-  //   }
-  //   if (unn.empty())
-  //     return false;
-  //   // unn is now a set of polygons without any holes.
-  //   for (const Path &path : all) {
-  //     if (SameOrInside(path, unn[0])) {
-  //       island->push_back(path);
-  //     }
-  //   }
-  //   return true;
-  // }
-
   void CopyAndForceOrientation(const PolyNode &node, bool orientation, Paths *out) {
     for (const auto &child : node.Childs) {
       out->push_back(child->Contour);
@@ -419,7 +390,7 @@ namespace {
   }
 
   bool CopyAndForceOrientation(const Paths &paths, bool orientation, Paths *out) {
-    // Use Clipper to convert edge_cuts to a PolyTree.
+    // Use Clipper to convert paths to a PolyTree.
     Clipper c;
     PolyTree solution;
     if (!c.AddPaths(paths, ptSubject, true) ||
@@ -652,6 +623,17 @@ namespace {
       }
     }
   }
+  
+  bool OnOrInside(const Path &, const Path &) MUST_USE_RESULT;
+  bool OnOrInside(const Path &inner, const Path &outer) {
+    for (const auto &pt : inner) {
+      // PointInPolygon uses doubles internally and as a result occasionally
+      // lies about the status of a point.
+      if (PointInPolygon(pt, outer) == 0)
+        return false;
+    }
+    return true;
+  }
 
   bool TrimCutsToBoundingBox(cInt, cInt, Paths *) MUST_USE_RESULT;
   bool TrimCutsToBoundingBox(cInt width, cInt height, Paths *cuts) {
@@ -682,39 +664,185 @@ namespace {
     return true;    
   }
 
-  void AddOpenPathsToPs(const Paths &paths, FILE *fp) {
-    for (const auto &cut : paths) {
-      fprintf(fp, "0.2 setlinewidth\n");
-      for (const auto &pt : cut) {
-        fprintf(fp, "%f %f %s\n",
-                QuantaToInches(pt.X) * 72,
-                QuantaToInches(pt.Y) * 72,
-                &pt == &*cut.begin() ? "newpath moveto" : "lineto");
+  struct CutPath {
+    double height;
+    Path path;
+  };
+
+  struct Part {
+    std::vector<CutPath> interior;
+    std::vector<CutPath> perimeter;
+  };
+
+  Part *ResizeGet(std::vector<Part> *t, size_t i) {
+    if (t->size() <= i)
+      t->resize(i + 1);
+    return &(*t)[i];
+  }
+
+  bool AddCutPathToPart(
+      const CutPath &, const Paths &, std::vector<Part> *) MUST_USE_RESULT;
+  bool AddCutPathToPart(
+      const CutPath &cp, const Paths &perimeters, std::vector<Part> *parts) {
+    for (size_t i = 0; i < perimeters.size(); ++i) {
+      const Path &perimeter = perimeters[i];
+      if (cp.path.front() == cp.path.back()) {
+        const Path closed_cp(cp.path.begin(), cp.path.end() - 1);
+        const double cp_area = fabs(Area(closed_cp));
+        const double perimeter_area = fabs(Area(perimeter));
+        Paths unn{perimeter};
+        if (!UnionInto(Paths{closed_cp}, &unn))
+          return false;
+        if (unn.size() > 1)
+          continue;  // Disjoint
+        const double union_area = fabs(Area(unn[0]));
+        if (union_area < perimeter_area + cp_area * .5) {
+          bool is_interior = perimeter_area - cp_area > perimeter_area * .00001;
+          if (cp.height > 0. || is_interior) {
+            ResizeGet(parts, i)->interior.push_back(cp);
+          } else {
+            ResizeGet(parts, i)->perimeter.push_back(cp);
+          }
+          return true;
+        }
+      } else {
+        // PointInPolygon isn't 100% accurate, so a heuristic is used.
+        unsigned in_count = 0;
+        for (const auto &pt : cp.path) {
+          if (PointInPolygon(pt, perimeter) == 1) {
+            ++in_count;
+          }
+        }
+        if (in_count * 2 >= perimeter.size()) {
+          ResizeGet(parts, i)->interior.push_back(cp);
+          return true;
+        }
       }
-      fprintf(fp, "%f setgray\n", 1.);
-      fprintf(fp, "stroke\n");
+    }
+    ResizeGet(parts, perimeters.size())->interior.push_back(cp);
+    return true;
+  }
+
+  bool FindDisjointParts(const std::vector<CutPath> &, std::vector<Part> *) MUST_USE_RESULT;
+  bool FindDisjointParts(const std::vector<CutPath> &all, std::vector<Part> *parts) {
+    parts->clear();
+    Paths unn;
+    for (const auto &cp : all) {
+      if (cp.height <= 0. && cp.path.front() == cp.path.back()) {
+        Paths paths{cp.path};
+        paths.front().pop_back();
+        if (!UnionInto(paths, &unn))
+          return false;        
+      }
+    }
+    for (const auto &cp : all) {
+      if (!AddCutPathToPart(cp, unn, parts))
+        return false;
+    }
+    return true;
+  }
+
+  std::vector<double> PassHeights(const Config &config, double height) {
+    const double delta = config.material_height - height;
+    const int passes = ceil(delta / config.max_pass_depth);
+    std::vector<double> result;
+    for (int i = passes - 1; i >= 0; --i) {
+      result.push_back(i * (delta / passes) + height);
+    }
+    return result;
+  }
+
+  cInt DistanceSquared(const IntPoint &a, const IntPoint &b) {
+    const cInt dx = a.X - b.X;
+    const cInt dy = a.Y - b.Y;
+    return dx*dx + dy*dy;
+  }
+
+  void MoveNearestCutPathAndLayer(const Config &config,
+                                  std::vector<CutPath> *input,
+                                  std::vector<CutPath> *output) {
+    IntPoint last_pos{-1, -1};
+    if (!output->empty()) {
+      last_pos = output->back().path.back();
+    }
+
+    // Find the point in the remaining cuts closest to the current position.
+    // For non-loop cuts, only consider starting at the beginning of the cut.
+    CutPath *cp = nullptr;
+    size_t ind;
+    cInt min_d2 = std::numeric_limits<cInt>::max();
+    for (auto &cpt : *input) {
+      const auto &p = cpt.path;
+      const bool is_loop = p.front() == p.back();
+      const size_t end = is_loop ? p.size() : 1;
+      for (size_t i = 0; i < end; ++i) {
+        const cInt d2 = DistanceSquared(last_pos, p[i]);
+        if (d2 < min_d2) {
+          ind = i;
+          cp = &cpt;
+          min_d2 = d2;
+        }
+      }
+    }
+
+    CutPath new_cp;
+    new_cp.height = cp->height;
+    if (ind == 0) {
+      new_cp.path = cp->path;
+    } else {
+      new_cp.path.insert(new_cp.path.end(),
+                         cp->path.begin() + ind, cp->path.end());
+      new_cp.path.insert(new_cp.path.end(),
+                         cp->path.begin() + 1, cp->path.begin() + ind + 1);
+    }
+
+    // Remove cp from input.
+    if (cp != &input->back()) {
+      std::swap(*cp, input->back());
+    }
+    input->pop_back();
+
+    const double lowest_height = new_cp.height;
+    for (const double &height : PassHeights(config, lowest_height)) {
+      new_cp.height = height;
+      output->push_back(new_cp);
     }
   }
 
+  void AddOpenPathsToPs(const Path &cut, FILE *fp) {
+    for (const auto &pt : cut) {
+      fprintf(fp, "%f %f %s\n",
+              QuantaToInches(pt.X) * 72,
+              QuantaToInches(pt.Y) * 72,
+              &pt == &cut.front() ? "newpath moveto" : "lineto");
+    }
+    fprintf(fp, "stroke\n");
+  }
+
   void WriteCutsToPs(const std::string &path,
-                     const std::map<double, LayerCuts> &height_to_cuts) {
+                     const std::vector<CutPath> &ordered_cuts) {
     FILE *fp = fopen(path.c_str(), "w");
     if (!fp) {
       perror(path.c_str());
       return;
     }
-    fprintf(fp, "1 setgray clippath fill\n");
-    for (const auto &layer : height_to_cuts) {
-      AddOpenPathsToPs(layer.second.edges, fp);
-      AddOpenPathsToPs(layer.second.surface, fp);
+    fprintf(fp, "0.2 setlinewidth\n");
+    IntPoint last(0, 0);
+    bool green = true;
+    for (const auto &cp : ordered_cuts) {
+      // Move
+      Path move{last, cp.path.front()};
+      fprintf(fp, "1 0 0 setrgbcolor\n");
+      AddOpenPathsToPs(move, fp);
+      // Cut
+      fprintf(fp, "%s setrgbcolor\n", green ? "0 1 0" : "0 0 1");
+      green = !green;
+      AddOpenPathsToPs(cp.path, fp);
+      last = cp.path.back();
     }
 
     fclose(fp);
   }
-
-  // void WriteCutsToNc(const std::string &,
-  //                    const std::map<double, Paths> &) {
-  // }
 }  // namespace
 
 int main(int argc, char *argv[]) {
@@ -755,52 +883,76 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  // When multiple cuts are on top of each other, only keep the bottom cut.
-  {
+  {  // When multiple cuts are on top of each other, only keep the bottom cut.
     UniqSeg uniq_seg;
     for (auto &iter : height_to_cuts) {
       Paths *edges = &iter.second.edges;
       Paths new_edges;
       for (const Path &path : *edges) {
+        Paths new_path;
         for (size_t i = 0; i + 1 < path.size(); ++i) {
           Paths tmp;
           uniq_seg.RemoveRedundant(path[i], path[i + 1], &tmp);
           for (const Path &p : tmp) {
             assert(p.size() == 2);
-            if (!new_edges.empty() && new_edges.back().back() == p.front()) {
-              new_edges.back().push_back(p.back());
+            if (!new_path.empty() && new_path.back().back() == p.front()) {
+              new_path.back().push_back(p.back());
             } else {
-              new_edges.push_back(p);
+              new_path.push_back(p);
             }
           }
         }
+        if (new_path.size() > 1 &&
+            new_path.front().front() == new_path.back().back()) {
+          new_path.back().insert(new_path.back().end(),
+                                 new_path.front().begin(),
+                                 new_path.front().end());
+          new_path.front().swap(new_path.back());
+          new_path.pop_back();
+        }
+        new_edges.insert(new_edges.end(), new_path.begin(), new_path.end());
       }
       edges->swap(new_edges);
     }
   }
 
-  // TODO: Need a data structure to hold {cuts (directed or not), heights, and
-  // ordering information}.
+  // Separate cuts into separate pieces that are surrounded by full depth cuts.
+  std::vector<CutPath> all_ordered_cuts;
+  {
+    // Fill unordered_cuts with all cuts from all layers.
+    std::vector<CutPath> unordered_cuts;
+    for (const auto &layer : height_to_cuts) {
+      const double height = layer.first;
+      for (const auto &p : layer.second.edges)
+        unordered_cuts.push_back(CutPath{height, p});
+      for (const auto &p : layer.second.surface)
+        unordered_cuts.push_back(CutPath{height, p});
+    }
 
-  // When cuts are too deep to do in a single pass, duplicate them at higher
-  // levels.
-  for (const auto &iter : height_to_cuts) {
-    const double height = iter.first;
-    const int passes = ceil((config.material_height - height) /
-                            config.max_pass_depth);
-    for (int i = 0; i < passes; ++i) {
-      // TODO
+    std::vector<Part> parts;
+    if (!FindDisjointParts(unordered_cuts, &parts)) {
+      fprintf(stderr, "failed computing disjoint parts.\n");
+      return EXIT_FAILURE;      
+    }
+
+    printf("parts %lu\n", parts.size());
+
+    for (Part &part : parts) {
+      // TODO: Improve the ordering of parts.
+      while (!part.interior.empty()) {
+        MoveNearestCutPathAndLayer(
+            config, &part.interior, &all_ordered_cuts);
+      }
+      while (!part.perimeter.empty()) {
+        MoveNearestCutPathAndLayer(
+            config, &part.perimeter, &all_ordered_cuts);
+      }
     }
   }
 
-  // Path plan.
-  // For all eligible paths, keep a heap sorted by path length. Take the
-  // shortest path, merge it with the nearest path that hasn't been processed.
-  // Insert any paths that are now possible to process. Repeat.
-
   // Write result to files.
   if (!config.output_ps_path.empty()) {
-    WriteCutsToPs(config.output_ps_path, height_to_cuts);
+    WriteCutsToPs(config.output_ps_path, all_ordered_cuts);
   }
 
   // if (!config.output_nc_path.empty()) {

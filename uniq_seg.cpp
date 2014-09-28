@@ -100,6 +100,9 @@ void UniqSeg::RemoveRedundant(
     o->push_back(r0);
     o->push_back(r1);
   }
+  if (reverse) {
+    std::reverse(output->begin(), output->end());
+  }
   seen_spans.insert(full_span);
 }
 
@@ -143,11 +146,11 @@ int main(int, char *[]) {
     uniq.RemoveRedundant(pts[4], pts[0], &output);
     if (output.size() != 2 ||
         output[0].size() != 2 ||
-        !ExpectEq(output[0][0], pts[1]) ||
-        !ExpectEq(output[0][1], pts[0]) ||
+        !ExpectEq(output[0][0], pts[4]) ||
+        !ExpectEq(output[0][1], pts[3]) ||
         output[1].size() != 2 ||
-        !ExpectEq(output[1][0], pts[4]) ||
-        !ExpectEq(output[1][1], pts[3]))
+        !ExpectEq(output[1][0], pts[1]) ||
+        !ExpectEq(output[1][1], pts[0]))
       return 1;
 
     uniq.RemoveRedundant(pts[1], pts[3], &output);
