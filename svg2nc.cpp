@@ -792,30 +792,76 @@ namespace {
     return dx*dx + dy*dy;
   }
 
+  IntPoint LastPosition(std::vector<CutPath> &history) {
+    if (history.empty()) {
+      return IntPoint{0, 0};
+    } else {
+      return history.back().path.back();
+    }
+  }
+
+  cInt ClosestPointInPath(
+      const IntPoint &pt, const Path &path, size_t *index = nullptr) {
+    const bool is_loop = path.front() == path.back();
+    const size_t end = is_loop ? path.size() : 1;
+    cInt min_d2 = std::numeric_limits<cInt>::max();
+    for (size_t i = 0; i < end; ++i) {
+      const cInt d2 = DistanceSquared(pt, path[i]);
+      if (d2 < min_d2) {
+        if (index)
+          *index = i;
+        min_d2 = d2;
+      }
+    }
+    return min_d2;
+  }
+
+  cInt DistanceSquaredToCutPaths(const IntPoint &last_pos,
+                                 const std::vector<CutPath> &paths) {
+    cInt min_d2 = std::numeric_limits<cInt>::max();
+    for (const auto &cp : paths) {
+      min_d2 = std::min(min_d2, ClosestPointInPath(last_pos, cp.path));
+    }
+    return min_d2;
+  }
+
+  Part RemoveClosestPart(const IntPoint &last_pos, std::vector<Part> *parts) {
+    size_t closest = 0;
+    cInt min_d2 = std::numeric_limits<cInt>::max();
+    for (size_t i = 0; i < parts->size(); ++i) {
+      const Part &part = (*parts)[i];
+      const cInt d2 = std::min(
+          DistanceSquaredToCutPaths(last_pos, part.interior),
+          DistanceSquaredToCutPaths(last_pos, part.perimeter));
+      if (d2 < min_d2) {
+        min_d2 = d2;
+        closest = i;
+      }
+    }
+    Part res = (*parts)[closest];
+    if (closest + 1 != parts->size()) {
+      std::swap((*parts)[closest], parts->back());
+    }
+    parts->pop_back();
+    return res;
+  }
+
   void MoveNearestCutPathAndLayer(const Config &config,
                                   std::vector<CutPath> *input,
                                   std::vector<CutPath> *output) {
-    IntPoint last_pos{-1, -1};
-    if (!output->empty()) {
-      last_pos = output->back().path.back();
-    }
-
+    const IntPoint last_pos = LastPosition(*output);
     // Find the point in the remaining cuts closest to the current position.
     // For non-loop cuts, only consider starting at the beginning of the cut.
     CutPath *cp = nullptr;
     size_t ind;
     cInt min_d2 = std::numeric_limits<cInt>::max();
     for (auto &cpt : *input) {
-      const auto &p = cpt.path;
-      const bool is_loop = p.front() == p.back();
-      const size_t end = is_loop ? p.size() : 1;
-      for (size_t i = 0; i < end; ++i) {
-        const cInt d2 = DistanceSquared(last_pos, p[i]);
-        if (d2 < min_d2) {
-          ind = i;
-          cp = &cpt;
-          min_d2 = d2;
-        }
+      size_t index;
+      const cInt d2 = ClosestPointInPath(last_pos, cpt.path, &index);
+      if (d2 < min_d2) {
+        ind = index;
+        cp = &cpt;
+        min_d2 = d2;
       }
     }
 
@@ -971,8 +1017,9 @@ int main(int argc, char *argv[]) {
     // TODO: Make this verbose only and include total path cut time.
     printf("parts %lu\n", parts.size());
 
-    for (Part &part : parts) {
-      // TODO: Improve the ordering of parts.
+    while (!parts.empty()) {
+      Part part = RemoveClosestPart(
+          LastPosition(all_ordered_cuts), &parts);
       while (!part.interior.empty()) {
         MoveNearestCutPathAndLayer(
             config, &part.interior, &all_ordered_cuts);
@@ -984,7 +1031,6 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  // Write result to files.
   if (!config.output_ps_path.empty()) {
     WriteCutsToPs(config.output_ps_path, all_ordered_cuts);
   }
