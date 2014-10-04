@@ -43,9 +43,9 @@ using ClipperLib::Path;
 using ClipperLib::Paths;
 using ClipperLib::PolyNode;
 using ClipperLib::PolyTree;
-using ClipperLib::SimplifyPolygons;
 
-// TODO: die() instead of returning false.
+// TODO: Improve the error reporting. In some cases the program should just
+// abort instead of returning false up multple layers of function calls.
 
 #define MUST_USE_RESULT __attribute__((warn_unused_result))
 

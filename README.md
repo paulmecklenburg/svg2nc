@@ -3,17 +3,47 @@ svg2nc
 
 ## About svg2nc
 
-Command line tool to covert scalable vector graphics (svg) files to g-code nc files for a 3-axis nc mill. svg2nc assumes a cylindrical bit and all units are inches.
+Command line tool to covert scalable vector graphics (svg) files to g-code nc files for a 3-axis nc mill. svg2nc assumes a cylindrical bit. All units are inches.
 
 
 ## Using svg2nc
 
-svg2nc reliease on libsvgtiny to handle svg input. Paths and basic shapes are supported. Clones are ignored. Layers that are marked hidden are not actually ignored.
+svg2nc generates imperial unit nc files for a 3-axis mill from an svg file. It's easiest to understand with an example:
 
-libsvgtiny does not correctly handle a relative move after a path close. Inkscape generates files that contain this sequence. I have a fix and am working on getting permission from my employer to share it. Until this is done, expect bizarre results.
+./svg2nc --verbose             \
+  --color-elevation=FF0000:.25 \
+  --color-elevation=00FF00:.5  \
+  --feed-rate=12               \
+  --diameter=.125              \
+  --clearance-space=.2         \
+  --material-thickness=.5      \
+  --ps-file=test-debug.ps      \
+  --nc-file=test.nc            \
+  --through-elevation=-.003    \
+  --max-pass-depth=.3          \
+  test.svg
+
+This command reads in test.svg and treats red (FF0000) as .25" and green (00FF00) as .5" elevations. The material thickness is explicitly set to .5". No cut will remove more than .3" inches at a time. Deeper cuts are done in passes. While moving, the tool will be lifted .2" above the surface. The results are written to two files: test-debug.ps and test.nc. The former is a PostScript file which is useful for sanity checking the results.
+
+If no material thickness is specified, svg assumes the material is as thick as the highest elevation given.
+
+
+## Known Issues and Limitations
+
+svg2nc uses libsvgtiny to parse svg files. libsvgtiny does not correctly handle a relative move after a path close. Inkscape generates files that contain these. The fix is trivial, but is not yet in mainline libsvgtiny.
+
+svg2nc relies on libsvgtiny to handle svg input. Paths and basic shapes are supported. Clones are ignored. Layers that are marked hidden are not actually ignored.
+
+svg2nc breaks the design into parts and cuts each separately. It will not necessarily order the cuts of nested parts correctly. Do not place parts inside of pockets of other parts. Cutting a set of concentric rings will not work.
+
+svg2nc does not support color gradients. The elevation of each path must be uniform.
 
 
 ## Building svg2nc
 
-Dependencies (on debian based systems):
-  * clipper (libpolyclipping-dev).
+svg2nc depends on
+* clipper (libpolyclipping-dev on debian).
+* boost (libboost-dev on debian)
+* libsvgtiny
+
+You have to build libsvgtiny yourself. This requires CMake, gperf, libhubbub, libexpat and several other netsurf libraries (buildsystem, libdom, libparserutils, libwapcaplet).
