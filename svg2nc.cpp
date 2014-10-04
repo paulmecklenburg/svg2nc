@@ -52,10 +52,13 @@ using ClipperLib::SimplifyPolygons;
 namespace {
   struct Config {
     std::map<uint32_t, double> color_to_elevation;
+    double clearance_space = .25;
     double diameter = -1.;
+    double feed_rate = 12.;
     double material_thickness = -1.;
     double mill_overlap = .1;
     double max_pass_depth = .25;
+    double spindle_speed = 1000.;
     double through_elevation = 0;
     std::string svg_path;
     std::string output_ps_path;
@@ -69,13 +72,18 @@ namespace {
         "  -h  --help                 Display this usage information.\n"
         "  -c --color-elevation=<hex color>:<inches>\n"
         "     Specify the elevation for a color.\n"
+        "  -f --feed-rate=<inches per second>\n"
+        "     Specify the feed rate.\n"
         "  -d --diameter=<inches>     Set the tool DIAMETER.\n"
+        "  -l --clearance-space=<inches>\n"
+        "     Safety space to use above the part while moving.\n"
         "  -m --material-thickness=<inches>\n"
         "     Specify the material thickness.\n"
         "  -n --nc-file=<path>        Write the cut plan to a .nc file.\n"
         "  -o --mill-overlap=<fraction>\n"
         "     Fraction of a cut to overlap with adjacent cuts.\n"
         "  -p --ps-file=<path>        Write the cut plan to a .ps file.\n"
+        "  -s --spindle_speed=<rpm>   Set the spindle speed.\n"
         "  -t --through-elevatation=<inches>\n"
         "     The elevation to use while cutting holes and outlines.\n"
         "  -x --max-pass-depth=<depth>\n"
@@ -108,16 +116,19 @@ namespace {
     Config config;
     int c;
     static const struct option long_options[] = {
-      {"help", no_argument, NULL, 'h'},
-      {"color-elevation", required_argument, NULL, 'c'},
-      {"diameter", required_argument, NULL, 'd'},
-      {"material-thickness", required_argument, NULL, 'm'},
-      {"max-pass-depth", required_argument, NULL, 'x'},
-      {"nc-file", required_argument, NULL, 'n'},
-      {"mill-overlap", required_argument, NULL, 'o'},
-      {"ps-file", required_argument, NULL, 'p'},
-      {"through-elevation", required_argument, NULL, 't'},
-      {NULL, 0, NULL, 0},
+      {"help", no_argument, nullptr, 'h'},
+      {"clearance-space", required_argument, nullptr, 'l'},
+      {"color-elevation", required_argument, nullptr, 'c'},
+      {"diameter", required_argument, nullptr, 'd'},
+      {"feed-rate", required_argument, nullptr, 'f'},
+      {"material-thickness", required_argument, nullptr, 'm'},
+      {"max-pass-depth", required_argument, nullptr, 'x'},
+      {"nc-file", required_argument, nullptr, 'n'},
+      {"mill-overlap", required_argument, nullptr, 'o'},
+      {"ps-file", required_argument, nullptr, 'p'},
+      {"spindle-speed", required_argument, nullptr, 's'},
+      {"through-elevation", required_argument, nullptr, 't'},
+      {nullptr, 0, nullptr, 0},
     };
     while ((c = getopt_long(
                 argc, argv, "hc:d:m:n:p:x:", long_options, nullptr)) != -1) {
@@ -134,6 +145,12 @@ namespace {
       case 'd':
         config.diameter = atof(optarg);
         break;
+      case 'f':
+        config.feed_rate = atof(optarg);
+        break;
+      case 'l':
+        config.clearance_space = atof(optarg);
+        break;
       case 'm':
         config.material_thickness = atof(optarg);
         break;
@@ -148,6 +165,9 @@ namespace {
         break;
       case 'x':
         config.max_pass_depth = atof(optarg);
+        break;
+      case 's':
+        config.spindle_speed = atof(optarg);
         break;
       case 't':
         config.through_elevation = atof(optarg);
@@ -903,7 +923,7 @@ namespace {
     FILE *fp = fopen(path.c_str(), "w");
     if (!fp) {
       perror(path.c_str());
-      return;
+      exit(EXIT_FAILURE);
     }
     fprintf(fp, "0.2 setlinewidth\n");
     IntPoint last(0, 0);
@@ -920,6 +940,53 @@ namespace {
       last = cp.path.back();
     }
 
+    fclose(fp);
+  }
+
+  void WriteCutsToNc(const Config &config,
+                     const std::vector<CutPath> &ordered_cuts) {
+    FILE *fp = fopen(config.output_nc_path.c_str(), "w");
+    if (!fp) {
+      perror(config.output_nc_path.c_str());
+      exit(EXIT_FAILURE);
+    }
+
+    fprintf(fp,
+            ";; %s\n"
+            "G40 (disable tool radius compensation)\n"
+            "G49 (disable tool length compensation)\n"
+            "G80 (cancel modal motion)\n"
+            "G54 (select coordinate system 1)\n"
+            "G90 (disable incremental moves)\n"
+            "G20 (imperial)\n"
+            "G61 (exact path mode)\n"
+            "F%.3f (feed rate)\n"
+            "S%.1f (spindle speed)\n"
+            "M3 (start spindle)\n"
+            "G04 p1 (wait for 1 second)\n",
+            config.svg_path.c_str(), config.feed_rate, config.spindle_speed);
+
+    const double safe_elevation =
+      config.material_thickness + config.clearance_space;
+    IntPoint last{0, 0};
+    for (const auto &cp : ordered_cuts) {
+      const auto &first = cp.path.front();
+      if (first != last) {
+        fprintf(fp, "G0 Z%f\n", safe_elevation);
+        fprintf(fp, " X%f Y%f\n",
+                QuantaToInches(first.X),
+                QuantaToInches(first.Y));
+      }
+      fprintf(fp, "G1 Z%f\n", cp.elevation);
+      for (size_t i = 1; i < cp.path.size(); ++i) {
+        const auto &cur = cp.path[i];
+        fprintf(fp, " X%f Y%f\n", QuantaToInches(cur.X), QuantaToInches(cur.Y));
+      }
+    }
+
+    fprintf(fp,
+            "M5 (stop spindle)\n"
+            "M2 (end program)\n");
     fclose(fp);
   }
 }  // namespace
@@ -1014,9 +1081,6 @@ int main(int argc, char *argv[]) {
       return EXIT_FAILURE;      
     }
 
-    // TODO: Make this verbose only and include total path cut time.
-    printf("parts %lu\n", parts.size());
-
     while (!parts.empty()) {
       Part part = RemoveClosestPart(
           LastPosition(all_ordered_cuts), &parts);
@@ -1031,13 +1095,22 @@ int main(int argc, char *argv[]) {
     }
   }
 
+  // TODO: Make this verbose only.
+  if (true /* verbose */) {
+    // printf("parts %lu\n", parts.size());
+    // double dist = 0;
+    // for (const auto &cp : all_ordered_cuts) {
+    //   dist += PathLength(cp.path);
+    // }
+  }
+
   if (!config.output_ps_path.empty()) {
     WriteCutsToPs(config.output_ps_path, all_ordered_cuts);
   }
 
-  // if (!config.output_nc_path.empty()) {
-  //   WriteCutsToNc(config.output_nc_path, height_to_cuts);
-  // }
+  if (!config.output_nc_path.empty()) {
+    WriteCutsToNc(config, all_ordered_cuts);
+  }
 
   return EXIT_SUCCESS;
 }
