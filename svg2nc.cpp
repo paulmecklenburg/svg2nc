@@ -60,6 +60,7 @@ namespace {
     double max_pass_depth = .25;
     double spindle_speed = 1000.;
     double through_elevation = 0;
+    bool verbose = false;
     std::string svg_path;
     std::string output_ps_path;
     std::string output_nc_path;
@@ -72,7 +73,7 @@ namespace {
         "  -h  --help                 Display this usage information.\n"
         "  -c --color-elevation=<hex color>:<inches>\n"
         "     Specify the elevation for a color.\n"
-        "  -f --feed-rate=<inches per second>\n"
+        "  -f --feed-rate=<inches per minute>\n"
         "     Specify the feed rate.\n"
         "  -d --diameter=<inches>     Set the tool DIAMETER.\n"
         "  -l --clearance-space=<inches>\n"
@@ -86,6 +87,7 @@ namespace {
         "  -s --spindle_speed=<rpm>   Set the spindle speed.\n"
         "  -t --through-elevatation=<inches>\n"
         "     The elevation to use while cutting holes and outlines.\n"
+        "  -v --verbose               Enable verbose output.\n"
         "  -x --max-pass-depth=<depth>\n"
         "     The maximum depth to cut in a single pass.\n"
     );
@@ -128,10 +130,11 @@ namespace {
       {"ps-file", required_argument, nullptr, 'p'},
       {"spindle-speed", required_argument, nullptr, 's'},
       {"through-elevation", required_argument, nullptr, 't'},
+      {"verbose", no_argument, nullptr, 'v'},
       {nullptr, 0, nullptr, 0},
     };
     while ((c = getopt_long(
-                argc, argv, "hc:d:m:n:p:x:", long_options, nullptr)) != -1) {
+                argc, argv, "hl:c:d:f:m:n:o:p:s:t:vx:", long_options, nullptr)) != -1) {
       switch (c) {
       case 'h':        
         PrintUsage(stderr, program_name, EXIT_SUCCESS);
@@ -163,14 +166,17 @@ namespace {
       case 'p':
         config.output_ps_path = optarg;
         break;
-      case 'x':
-        config.max_pass_depth = atof(optarg);
-        break;
       case 's':
         config.spindle_speed = atof(optarg);
         break;
       case 't':
         config.through_elevation = atof(optarg);
+        break;
+      case 'v':
+        config.verbose = true;
+        break;
+      case 'x':
+        config.max_pass_depth = atof(optarg);
         break;
       }
     }
@@ -908,6 +914,14 @@ namespace {
     }
   }
 
+  double PathLength(const Path &cut) {
+    double total = 0;
+    for (size_t i = 0; i + 1 < cut.size(); ++i) {
+      total += sqrt(DistanceSquared(cut[i], cut[i+1]));
+    }
+    return QuantaToInches(total);
+  }
+
   void AddOpenPathsToPs(const Path &cut, FILE *fp) {
     for (const auto &pt : cut) {
       fprintf(fp, "%f %f %s\n",
@@ -1081,6 +1095,10 @@ int main(int argc, char *argv[]) {
       return EXIT_FAILURE;      
     }
 
+    if (config.verbose) {
+      printf("Number of distinct parts: %lu\n", parts.size());
+    }
+
     while (!parts.empty()) {
       Part part = RemoveClosestPart(
           LastPosition(all_ordered_cuts), &parts);
@@ -1095,13 +1113,16 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  // TODO: Make this verbose only.
-  if (true /* verbose */) {
-    // printf("parts %lu\n", parts.size());
-    // double dist = 0;
-    // for (const auto &cp : all_ordered_cuts) {
-    //   dist += PathLength(cp.path);
-    // }
+  if (config.verbose) {
+    double cut_distance = 0;
+    for (const auto &cp : all_ordered_cuts) {
+      cut_distance += PathLength(cp.path);
+    }
+    printf("Total cut distance: %f\n", cut_distance);
+    unsigned seconds = cut_distance / config.feed_rate * 60;
+    const unsigned minutes = seconds / 60;
+    seconds = seconds % 60;
+    printf("Total cut time excluding moves: %u:%02u\n", minutes, seconds);
   }
 
   if (!config.output_ps_path.empty()) {
