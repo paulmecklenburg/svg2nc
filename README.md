@@ -44,8 +44,44 @@ svg2nc does not support color gradients. The elevation of each path must be unif
 ## Building svg2nc
 
 svg2nc depends on
-* clipper (libpolyclipping-dev on debian).
-* boost (libboost-dev on debian)
+* Clipper (libpolyclipping-dev on debian).
+* Boost (libboost-dev on debian)
+* ANN (libann-dev on debian)
 * libsvgtiny
 
-You have to build libsvgtiny yourself. This requires CMake, gperf, libhubbub, libexpat and several other netsurf libraries (buildsystem, libdom, libparserutils, libwapcaplet).
+The following instructions assume a debian-based system and were tested on Ubuntu.
+
+### git, g++, ANN, Clipper, Boost, Expat, and gperf
+ANN, Clipper and Boost are used directly by svg2nc. Expat and gperf are requried by libsvgtiny.
+<pre>
+$ sudo apt-get install --assume-yes libann-dev libpolyclipping-dev libboost-dev libexpat1-dev gperf git g++
+</pre>
+
+### libsvgtiny
+<pre>
+$ mkdir tmp; cd tmp
+
+$ git clone git://git.netsurf-browser.org/buildsystem
+$ cd buildsystem && sudo make install && cd ..
+
+$ git clone git://git.netsurf-browser.org/libwapcaplet
+$ cd libwapcaplet && make && sudo make install && cd ..
+
+$ git clone git://git.netsurf-browser.org/libparserutils
+$ cd libparserutils && make && sudo make install && cd ..
+
+$ git clone git://git.netsurf-browser.org/libhubbub.git
+$ cd libhubbub && make && sudo make install && cd ..
+
+$ git clone git://git.netsurf-browser.org/libdom
+$ cd libdom && make && sudo make install && cd ..
+
+$ git clone git://git.netsurf-browser.org/libsvgtiny.git
+$ cd libsvgtiny && make && sudo make install && cd ..
+</pre>
+
+### svg2nc
+<pre>
+$ git clone https://github.com/paulmecklenburg/svg2nc.git
+$ cd svg2nc && make
+</pre>
