@@ -10,6 +10,7 @@ Command line tool to covert scalable vector graphics (svg) files to g-code nc fi
 
 svg2nc generates imperial unit nc files for a 3-axis mill from an svg file. It's easiest to understand with an example:
 
+<pre>
 ./svg2nc --verbose             \
   --color-elevation=FF0000:.25 \
   --color-elevation=00FF00:.5  \
@@ -22,6 +23,7 @@ svg2nc generates imperial unit nc files for a 3-axis mill from an svg file. It's
   --through-elevation=-.003    \
   --max-pass-depth=.3          \
   test.svg
+</pre>
 
 This command reads in test.svg and treats red (FF0000) as .25" and green (00FF00) as .5" elevations. The material thickness is explicitly set to .5". No cut will remove more than .3" inches at a time. Deeper cuts are done in passes. While moving, the tool will be lifted .2" above the surface. The results are written to two files: test-debug.ps and test.nc. The former is a PostScript file which is useful for sanity checking the results.
 
