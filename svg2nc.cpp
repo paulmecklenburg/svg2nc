@@ -999,8 +999,10 @@ namespace {
     }
 
     fprintf(fp,
+            "G0 Z%f\n"
             "M5 (stop spindle)\n"
-            "M2 (end program)\n");
+            "M2 (end program)\n",
+            safe_elevation);
     fclose(fp);
   }
 }  // namespace
