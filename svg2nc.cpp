@@ -996,6 +996,7 @@ namespace {
         const auto &cur = cp.path[i];
         fprintf(fp, " X%f Y%f\n", QuantaToInches(cur.X), QuantaToInches(cur.Y));
       }
+      last = cp.path.back();
     }
 
     fprintf(fp,
