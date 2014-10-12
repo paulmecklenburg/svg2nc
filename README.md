@@ -32,8 +32,6 @@ If no material thickness is specified, svg assumes the material is as thick as t
 
 ## Known Issues and Limitations
 
-svg2nc uses libsvgtiny to parse svg files. libsvgtiny does not correctly handle a relative move after a path close. Inkscape generates files that contain these. The fix is trivial, but is not yet in mainline libsvgtiny.
-
 svg2nc relies on libsvgtiny to handle svg input. Paths and basic shapes are supported. Clones are ignored. Layers that are marked hidden are not actually ignored.
 
 svg2nc breaks the design into parts and cuts each separately. It will not necessarily order the cuts of nested parts correctly. Do not place parts inside of pockets of other parts. Cutting a set of concentric rings will not work.
