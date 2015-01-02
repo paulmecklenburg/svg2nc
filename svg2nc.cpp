@@ -458,8 +458,13 @@ namespace {
 
   bool ComputeOffset(const Paths &, double, Paths *) MUST_USE_RESULT;
   bool ComputeOffset(const Paths &paths, double amount, Paths *result) {
+    // Previous operations can leave small artifacts (e.g. self-intersecting
+    // polygons) which ClipperOffset cannot handle. CleanPolygons fixes at least
+    // some of these cases.
+    Paths cleaned(paths.size());  // CleanPolygons does not resize 'cleaned'.
+    CleanPolygons(paths, cleaned);
     Paths tmp_paths;
-    if (!CopyAndForceOrientation(paths, true, &tmp_paths))
+    if (!CopyAndForceOrientation(cleaned, true, &tmp_paths))
       return false;
 
     ClipperOffset co;
