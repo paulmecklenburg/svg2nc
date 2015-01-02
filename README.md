@@ -47,7 +47,7 @@ svg2nc depends on
 * ANN (libann-dev on debian)
 * libsvgtiny
 
-The following instructions assume a debian-based system and were tested on Ubuntu.
+The following instructions assume a debian-based system and were tested on Ubuntu 14.04.
 
 ### git, g++, ANN, Clipper, Boost, Expat, and gperf
 ANN, Clipper and Boost are used directly by svg2nc. Expat and gperf are requried by libsvgtiny.
