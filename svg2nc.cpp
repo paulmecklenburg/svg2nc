@@ -61,6 +61,7 @@ namespace {
     double spindle_speed = 1000.;
     double through_elevation = 0;
     bool verbose = false;
+    int part = -1;
     std::string svg_path;
     std::string output_ps_path;
     std::string output_nc_path;
@@ -84,6 +85,7 @@ namespace {
         "  -o --mill-overlap=<fraction>\n"
         "     Fraction of a cut to overlap with adjacent cuts.\n"
         "  -p --ps-file=<path>        Write the cut plan to a .ps file.\n"
+        "  -r --part=<number>         Only process the specified number part.\n"
         "  -s --spindle_speed=<rpm>   Set the spindle speed.\n"
         "  -t --through-elevatation=<inches>\n"
         "     The elevation to use while cutting holes and outlines.\n"
@@ -118,15 +120,16 @@ namespace {
     Config config;
     int c;
     static const struct option long_options[] = {
-      {"help", no_argument, nullptr, 'h'},
       {"clearance-space", required_argument, nullptr, 'l'},
       {"color-elevation", required_argument, nullptr, 'c'},
       {"diameter", required_argument, nullptr, 'd'},
       {"feed-rate", required_argument, nullptr, 'f'},
+      {"help", no_argument, nullptr, 'h'},
       {"material-thickness", required_argument, nullptr, 'm'},
       {"max-pass-depth", required_argument, nullptr, 'x'},
-      {"nc-file", required_argument, nullptr, 'n'},
       {"mill-overlap", required_argument, nullptr, 'o'},
+      {"nc-file", required_argument, nullptr, 'n'},
+      {"part", required_argument, nullptr, 'r'},
       {"ps-file", required_argument, nullptr, 'p'},
       {"spindle-speed", required_argument, nullptr, 's'},
       {"through-elevation", required_argument, nullptr, 't'},
@@ -134,11 +137,9 @@ namespace {
       {nullptr, 0, nullptr, 0},
     };
     while ((c = getopt_long(
-                argc, argv, "hl:c:d:f:m:n:o:p:s:t:vx:", long_options, nullptr)) != -1) {
+                argc, argv, "c:d:f:hl:m:n:o:p:r:s:t:vx:",
+                long_options, nullptr)) != -1) {
       switch (c) {
-      case 'h':        
-        PrintUsage(stderr, program_name, EXIT_SUCCESS);
-        break;
       case '?':
         PrintUsage(stderr, program_name, EXIT_FAILURE);
         break;
@@ -150,6 +151,9 @@ namespace {
         break;
       case 'f':
         config.feed_rate = atof(optarg);
+        break;
+      case 'h':
+        PrintUsage(stderr, program_name, EXIT_SUCCESS);
         break;
       case 'l':
         config.clearance_space = atof(optarg);
@@ -165,6 +169,9 @@ namespace {
         break;
       case 'p':
         config.output_ps_path = optarg;
+        break;
+      case 'r':
+        config.part = atoi(optarg);
         break;
       case 's':
         config.spindle_speed = atof(optarg);
@@ -778,7 +785,7 @@ namespace {
             ++in_count;
           }
         }
-        if (in_count * 2 >= perimeter.size()) {
+        if (in_count * 2 >= cp.path.size()) {
           ResizeGet(parts, i)->interior.push_back(cp);
           return true;
         }
@@ -1105,6 +1112,10 @@ int main(int argc, char *argv[]) {
 
     if (config.verbose) {
       printf("Number of distinct parts: %lu\n", parts.size());
+    }
+
+    if (config.part >= 0 && config.part < (signed)parts.size()) {
+      parts = {parts[config.part]};
     }
 
     while (!parts.empty()) {
