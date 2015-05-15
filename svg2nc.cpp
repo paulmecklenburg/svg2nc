@@ -51,6 +51,7 @@ using ClipperLib::PolyTree;
 
 namespace {
   struct Config {
+    bool as_drawn = false;
     std::map<uint32_t, double> color_to_elevation;
     double clearance_space = .25;
     double diameter = -1.;
@@ -72,8 +73,10 @@ namespace {
     fprintf(
         stream,
         "  -h  --help                 Display this usage information.\n"
+        "  -a --as-drawn              Allow holes and pockets to be drawn on.\n"
         "  -c --color-elevation=<hex color>:<inches>\n"
         "     Specify the elevation for a color.\n"
+        "  -e --hole-color=<hex color> Color for drawn-on through holes.\n"
         "  -f --feed-rate=<inches per minute>\n"
         "     Specify the feed rate.\n"
         "  -d --diameter=<inches>     Set the tool DIAMETER.\n"
@@ -96,11 +99,23 @@ namespace {
     exit(exit_code);
   }
 
-  void ParseColorElevationPair(const char *optarg,
-                            std::map<uint32_t, double> *color_to_elevation) {
+  uint32_t ParseColor(const char *arg) {
+    uint32_t color;
+    if (1 == sscanf(arg, "%x", &color)) {
+      return color;
+    } else {
+      fprintf(stderr,
+              "'%s' does not match the expected format <hex color>\n",
+              arg);
+      exit(EXIT_FAILURE);
+    }
+  }
+
+  void ParseColorElevationPair(const char *arg,
+                               std::map<uint32_t, double> *color_to_elevation) {
     uint32_t color;
     double elevation;
-    if (2 == sscanf(optarg, "%x:%lg", &color, &elevation)) {
+    if (2 == sscanf(arg, "%x:%lg", &color, &elevation)) {
       if (elevation <= 0) {
         fprintf(stderr, "Elevation values must be greater than zero.\n");
         exit(EXIT_FAILURE);
@@ -110,7 +125,7 @@ namespace {
       fprintf(stderr,
               "'%s' does not match the expected format "
               "<hex color>:<decimal height>\n",
-              optarg);
+              arg);
       exit(EXIT_FAILURE);
     }
   }
@@ -119,12 +134,15 @@ namespace {
     const char *program_name = argv[0];
     Config config;
     int c;
+    std::string hole_color;
     static const struct option long_options[] = {
+      {"as-drawn", no_argument, nullptr, 'a'},
       {"clearance-space", required_argument, nullptr, 'l'},
       {"color-elevation", required_argument, nullptr, 'c'},
       {"diameter", required_argument, nullptr, 'd'},
       {"feed-rate", required_argument, nullptr, 'f'},
       {"help", no_argument, nullptr, 'h'},
+      {"hole-color", required_argument, nullptr, 'e'},
       {"material-thickness", required_argument, nullptr, 'm'},
       {"max-pass-depth", required_argument, nullptr, 'x'},
       {"mill-overlap", required_argument, nullptr, 'o'},
@@ -137,17 +155,23 @@ namespace {
       {nullptr, 0, nullptr, 0},
     };
     while ((c = getopt_long(
-                argc, argv, "c:d:f:hl:m:n:o:p:r:s:t:vx:",
+                argc, argv, "ac:d:e:f:hl:m:n:o:p:r:s:t:vx:",
                 long_options, nullptr)) != -1) {
       switch (c) {
       case '?':
         PrintUsage(stderr, program_name, EXIT_FAILURE);
+        break;
+      case 'a':
+        config.as_drawn = true;
         break;
       case 'c':
         ParseColorElevationPair(optarg, &config.color_to_elevation);
         break;
       case 'd':
         config.diameter = atof(optarg);
+        break;
+      case 'e':
+        hole_color = optarg;
         break;
       case 'f':
         config.feed_rate = atof(optarg);
@@ -192,6 +216,15 @@ namespace {
       PrintUsage(stderr, program_name, EXIT_FAILURE);
     }
     config.svg_path = argv[optind];
+    if (!hole_color.empty()) {
+      if (config.as_drawn) {
+        const uint32_t color = ParseColor(hole_color.c_str());
+        config.color_to_elevation[color] = config.through_elevation;
+      } else {
+        fprintf(stderr, "--hole-color requires --as-drawn.\n");
+        exit(EXIT_FAILURE);
+      }
+    }
     if (config.material_thickness <= 0) {
       for (const auto &iter : config.color_to_elevation) {
         config.material_thickness = std::max(config.material_thickness,
@@ -388,6 +421,16 @@ namespace {
     return true;
   }
 
+  bool SubtractFrom(const Paths &, Paths *) MUST_USE_RESULT;
+  bool SubtractFrom(const Paths &a, Paths *b) {
+    if (a.empty() || b->empty())
+      return true;
+    Clipper c;
+    return c.AddPaths(*b, ptSubject, true) &&
+      c.AddPaths(a, ptClip, true) &&
+      c.Execute(ctDifference, *b);
+  }
+
   bool UnionInto(const Paths &, Paths *) MUST_USE_RESULT;
   bool UnionInto(const Paths &paths, Paths *result) {
     if (paths.empty())
@@ -410,6 +453,18 @@ namespace {
     result->swap(solution);
     return true;
   }
+
+  bool BadPath(const Path &p) {
+    return p.size() < 3;
+  }
+
+  bool BadPaths(const Paths &a) {
+    for (const Path &p : a) {
+      if (BadPath(p))
+        return true;
+    }
+    return false;
+  }
   
   bool SvgToPolygons(const struct svgtiny_diagram &,
                      const Config &,
@@ -425,15 +480,34 @@ namespace {
           fprintf(stderr, "unable to process path.\n");
           return false;
         }
+        if (BadPaths(paths)) {
+          fprintf(stderr,
+                  "Input contains a bad path. This may be a bug in "
+                  "libtinysvg. For example, arc commands are converted to a "
+                  "single line segment.\n");
+          return false;
+        }
         const auto elevation_itr = config.color_to_elevation.find(shape.fill);
         if (elevation_itr == config.color_to_elevation.end()) {
           fprintf(stderr, "no elevation mapped for: %06X\n", shape.fill);
           return false;
         }
-        Paths &layer_paths = (*layers)[elevation_itr->second];
-        if (!UnionInto(paths, &layer_paths)) {
+        const double elevation = elevation_itr->second;
+        if (config.as_drawn) {
+          for (auto above_iter = layers->upper_bound(elevation);
+               above_iter != layers->end(); ++above_iter) {
+            if (!SubtractFrom(paths, &above_iter->second)) {
+              fprintf(stderr, "unable to subtract paths from above layer.\n");
+              return false;
+            }
+          }
+        }
+        if (elevation > 0) {
+          Paths &layer_paths = (*layers)[elevation];
+          if (!UnionInto(paths, &layer_paths)) {
             fprintf(stderr, "unable to merge paths into a common layer.\n");
             return false;
+          }
         }
       }
     }
@@ -487,16 +561,6 @@ namespace {
     co.ArcTolerance = kQuantaPerInch / 1000;
     co.AddPaths(cut, jtRound, etClosedLine);
     co.Execute(*result, InchesToQuanta(radius));
-  }
-
-  bool SubtractFrom(const Paths &, Paths *) MUST_USE_RESULT;
-  bool SubtractFrom(const Paths &a, Paths *b) {
-    if (a.empty() || b->empty())
-      return true;
-    Clipper c;
-    return c.AddPaths(*b, ptSubject, true) &&
-      c.AddPaths(a, ptClip, true) &&
-      c.Execute(ctDifference, *b);
   }
 
   bool EnforceStandardMilling(Paths *) MUST_USE_RESULT;
@@ -1048,6 +1112,8 @@ int main(int argc, char *argv[]) {
     ClosedToOpen(&iter.second.surface);
 
     // Clip to the size of the input drawing.
+    // TODO: This should probably be removed. The later part selection code
+    // can fail if trimming has occurred.
     if (!TrimCutsToBoundingBox(width, height, &iter.second.edges) ||
         !TrimCutsToBoundingBox(width, height, &iter.second.surface)) {
       fprintf(stderr, "failed trimming cuts to bounding box.\n");
