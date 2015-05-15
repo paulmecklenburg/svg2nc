@@ -2,6 +2,7 @@
 
 declare -A svg2nc_args
 svg2nc_args[parquetry]="-t -.01 -x .15 -c 008000:.25 -c 008080:.2 -d .125 -m .25"
+svg2nc_args[sample]="-t -.01 -x .1 -c 5a131f:.25 -c 000080:.2 -d .125 -m .25"
 
 fail_count=0
 for name in ${!svg2nc_args[*]}; do

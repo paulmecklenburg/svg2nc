@@ -778,16 +778,13 @@ namespace {
           return true;
         }
       } else {
-        // PointInPolygon isn't 100% accurate, so a heuristic is used.
-        unsigned in_count = 0;
+        // PointInPolygon isn't 100% accurate, so a heuristic is used. Assume
+        // parts are reasonably spaced. The first intersection is accepted.
         for (const auto &pt : cp.path) {
-          if (PointInPolygon(pt, perimeter) == 1) {
-            ++in_count;
+          if (PointInPolygon(pt, perimeter) != 0) {
+            ResizeGet(parts, i)->interior.push_back(cp);
+            return true;
           }
-        }
-        if (in_count * 2 >= cp.path.size()) {
-          ResizeGet(parts, i)->interior.push_back(cp);
-          return true;
         }
       }
     }
@@ -1145,6 +1142,7 @@ int main(int argc, char *argv[]) {
   }
 
   if (!config.output_ps_path.empty()) {
+    // TODO: Replace this with output to .svg so that the drawing size can be correct.
     WriteCutsToPs(config.output_ps_path, all_ordered_cuts);
   }
 
