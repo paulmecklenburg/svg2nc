@@ -1,10 +1,7 @@
-#include <algorithm>
 #include <array>
 #include <limits>
 #include <map>
-#include <set>
 #include <string>
-#include <utility>
 
 #include <assert.h>
 #include <ANN/ANN.h>
@@ -12,12 +9,11 @@
 #include <inttypes.h>
 #include <math.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 #include "polyclipping/clipper.hpp"
+#include "common.h"
+#include "path_util.h"
+#include "svg.h"
 #include "uniq_seg.h"
 extern "C" {
 #include "svgtiny.h"
@@ -25,29 +21,19 @@ extern "C" {
 
 using ClipperLib::Area;
 using ClipperLib::cInt;
-using ClipperLib::ctUnion;
 using ClipperLib::Clipper;
 using ClipperLib::ClipperOffset;
-using ClipperLib::ctDifference;
 using ClipperLib::ctIntersection;
 using ClipperLib::etClosedLine;
-using ClipperLib::etClosedPolygon;
 using ClipperLib::etOpenButt;
 using ClipperLib::IntPoint;
-using ClipperLib::Orientation;
 using ClipperLib::jtRound;
 using ClipperLib::jtSquare;
 using ClipperLib::ptSubject;
 using ClipperLib::ptClip;
 using ClipperLib::Path;
 using ClipperLib::Paths;
-using ClipperLib::PolyNode;
 using ClipperLib::PolyTree;
-
-// TODO: Improve the error reporting. In some cases the program should just
-// abort instead of returning false up multple layers of function calls.
-
-#define MUST_USE_RESULT __attribute__((warn_unused_result))
 
 namespace {
   struct Config {
@@ -254,305 +240,6 @@ namespace {
       exit(EXIT_FAILURE);
     }
     return config;
-  }
-
-  bool ReadFileToString(const char *, std::string *) MUST_USE_RESULT;
-  bool ReadFileToString(const char *path, std::string *result) {
-    struct stat sb;
-    if (stat(path, &sb)) {
-      perror(path);
-      return false;
-    }
-
-    FILE *fd = fopen(path, "rb");
-    if (!fd) {
-      perror(path);
-      return false;
-    }
-
-    result->reserve(sb.st_size);
-    result->resize(sb.st_size);
-    const size_t n = fread(&((*result)[0]), 1, sb.st_size, fd);
-    if (n != (size_t)sb.st_size) {
-      perror(path);
-      return false;
-    }
-
-    fclose(fd);
-    return true;
-  }
-
-  struct svgtiny_diagram *LoadSvg(const char *) MUST_USE_RESULT;
-  struct svgtiny_diagram *LoadSvg(const char *path) {
-    std::string svg_contents;
-    if (!ReadFileToString(path, &svg_contents)) {
-      return nullptr;
-    }
-    struct svgtiny_diagram *diagram = svgtiny_create();
-    const svgtiny_code code = svgtiny_parse(diagram,
-                                            svg_contents.data(), svg_contents.size(),
-                                            path, 100000, 100000);
-    switch (code) {
-    case svgtiny_OK:
-      return diagram;
-    case svgtiny_OUT_OF_MEMORY:
-      fprintf(stderr, "svgtiny_OUT_OF_MEMORY\n");
-      break;
-    case svgtiny_LIBDOM_ERROR:
-      fprintf(stderr, "svgtiny_LIBDOM_ERROR\n");
-      break;
-    case svgtiny_NOT_SVG:
-      fprintf(stderr, "svgtiny_NOT_SVG\n");
-      break;
-    case svgtiny_SVG_ERROR:
-      fprintf(stderr, "svgtiny_SVG_ERROR: line %i: %s\n",
-              diagram->error_line,
-              diagram->error_message);
-      break;
-    }
-    svgtiny_free(diagram);
-    return nullptr;
-  }
-
-  const cInt kQuantaPerInch = 100000;
-  const double kSvgUnitsPerInch = 90;
-
-  inline double SvgToInches(double x) {
-    return x / kSvgUnitsPerInch;
-  }
-
-  inline cInt InchesToQuanta(double x) {
-    return x * kQuantaPerInch;
-  }
-
-  inline double QuantaToInches(cInt x) {
-    return double(x) / kQuantaPerInch;
-  }
-
-  inline cInt SvgToQuanta(double x) {
-    return InchesToQuanta(SvgToInches(x));
-  }
-
-  void BezierPoint(double x0, double y0,
-                   double x1, double y1,
-                   double x2, double y2,
-                   double x3, double y3,
-                   double t,
-                   double *x, double *y) {
-    const double omt = 1. - t;
-    const double a = omt * omt * omt;
-    const double b = 3. * omt * omt * t;
-    const double c = 3. * omt * t * t;
-    const double d = t * t *t;
-    *x = a * x0 + b * x1 + c * x2 + d * x3;
-    *y = a * y0 + b * y1 + c * y2 + d * y3;
-  }
-
-  void AddBezierPointsToPath(double x0, double y0,
-                             double x1, double y1,
-                             double x2, double y2,
-                             double x3, double y3,
-                             double t0, double t2,
-                             Path *output) {
-    double a0, b0, a1, b1, a2, b2;
-    const double t1 = (t0 + t2) * .5;
-    BezierPoint(x0, y0, x1, y1, x2, y2, x3, y3, t0, &a0, &b0);
-    BezierPoint(x0, y0, x1, y1, x2, y2, x3, y3, t1, &a1, &b1);
-    BezierPoint(x0, y0, x1, y1, x2, y2, x3, y3, t2, &a2, &b2);
-    const double a_err = (a0 + a2) * .5 - a1;
-    const double b_err = (b0 + b2) * .5 - b1;
-    const double err = sqrt(a_err * a_err + b_err * b_err);
-    if (err > .001) {
-      AddBezierPointsToPath(x0, y0, x1, y1, x2, y2, x3, y3, t0, t1, output);
-      AddBezierPointsToPath(x0, y0, x1, y1, x2, y2, x3, y3, t1, t2, output);
-    } else {
-      output->push_back(IntPoint(InchesToQuanta(a2), InchesToQuanta(b2)));
-    }
-  }
-
-  bool ConvertPath(const float *, unsigned int, double, Paths *) MUST_USE_RESULT;
-  bool ConvertPath(const float *input, unsigned int length, double svg_height, Paths *output) {
-    // svg_height is used to invert the y axis.
-    Path *path = nullptr;
-    unsigned int j;
-    for (j = 0; j < length; ) {
-      switch ((int) input[j]) {
-      case svgtiny_PATH_MOVE:
-        if (path)
-          return false;
-        output->push_back(Path());
-        path = &output->back();
-      case svgtiny_PATH_LINE:
-        if (!path || (j + 3) > length)
-          return false;
-        path->push_back(IntPoint(SvgToQuanta(input[j+1]),
-                                 SvgToQuanta(svg_height - input[j+2])));
-        j += 3;
-        break;
-      case svgtiny_PATH_CLOSE:
-        if (!path || (j + 1) > length)
-          return false;
-        if (path->front() == path->back())
-          path->pop_back();  // Sometimes the final point is duplicated.
-        path = nullptr;
-        j += 1;
-        break;
-      case svgtiny_PATH_BEZIER:
-        {
-          if (!path || path->empty() || (j + 7) > length)
-            return false;
-          const double x0 = QuantaToInches(path->back().X);
-          const double y0 = QuantaToInches(path->back().Y);
-          AddBezierPointsToPath(x0, y0,
-                                SvgToInches(input[j+1]),
-                                SvgToInches(svg_height - input[j+2]),
-                                SvgToInches(input[j+3]),
-                                SvgToInches(svg_height - input[j+4]),
-                                SvgToInches(input[j+5]),
-                                SvgToInches(svg_height - input[j+6]),
-                                0., 1., path);
-          j += 7;
-          break;
-        }
-      default:
-        return false;
-      }
-    }
-    return true;
-  }
-
-  bool SubtractFrom(const Paths &, Paths *) MUST_USE_RESULT;
-  bool SubtractFrom(const Paths &a, Paths *b) {
-    if (a.empty() || b->empty())
-      return true;
-    Clipper c;
-    return c.AddPaths(*b, ptSubject, true) &&
-      c.AddPaths(a, ptClip, true) &&
-      c.Execute(ctDifference, *b);
-  }
-
-  bool UnionInto(const Paths &, Paths *) MUST_USE_RESULT;
-  bool UnionInto(const Paths &paths, Paths *result) {
-    if (paths.empty())
-      return true;
-
-    if (result->empty()) {
-      *result = paths;
-      return true;
-    }
-
-    Clipper c;
-    if (!c.AddPaths(*result, ptSubject, true) ||
-        !c.AddPaths(paths, ptClip, true)) {
-      return false;
-    }
-    Paths solution;
-    if (!c.Execute(ctUnion, solution)) {
-      return false;
-    }
-    result->swap(solution);
-    return true;
-  }
-
-  bool BadPath(const Path &p) {
-    return p.size() < 3;
-  }
-
-  bool BadPaths(const Paths &a) {
-    for (const Path &p : a) {
-      if (BadPath(p))
-        return true;
-    }
-    return false;
-  }
-  
-  bool SvgToPolygons(const struct svgtiny_diagram &,
-                     const Config &,
-                     std::map<double, Paths> *) MUST_USE_RESULT;
-  bool SvgToPolygons(const struct svgtiny_diagram &diagram,
-                     const Config &config,
-                     std::map<double, Paths> *layers) {
-    for (unsigned i = 0; i < diagram.shape_count; i++) {
-      const auto &shape = diagram.shape[i];
-      if (shape.path) {
-        Paths paths;
-        if (!ConvertPath(shape.path, shape.path_length, diagram.height, &paths)) {
-          fprintf(stderr, "unable to process path.\n");
-          return false;
-        }
-        if (BadPaths(paths)) {
-          fprintf(stderr,
-                  "Input contains a bad path. This may be a bug in "
-                  "libtinysvg. For example, arc commands are converted to a "
-                  "single line segment.\n");
-          return false;
-        }
-        const auto elevation_itr = config.color_to_elevation.find(shape.fill);
-        if (elevation_itr == config.color_to_elevation.end()) {
-          fprintf(stderr, "no elevation mapped for: %06X\n", shape.fill);
-          return false;
-        }
-        const double elevation = elevation_itr->second;
-        if (config.as_drawn) {
-          for (auto above_iter = layers->upper_bound(elevation);
-               above_iter != layers->end(); ++above_iter) {
-            if (!SubtractFrom(paths, &above_iter->second)) {
-              fprintf(stderr, "unable to subtract paths from above layer.\n");
-              return false;
-            }
-          }
-        }
-        if (elevation > 0) {
-          Paths &layer_paths = (*layers)[elevation];
-          if (!UnionInto(paths, &layer_paths)) {
-            fprintf(stderr, "unable to merge paths into a common layer.\n");
-            return false;
-          }
-        }
-      }
-    }
-    return true;
-  }
-
-  void CopyAndForceOrientation(const PolyNode &node, bool orientation, Paths *out) {
-    for (const auto &child : node.Childs) {
-      out->push_back(child->Contour);
-      if (Orientation(out->back()) != orientation) {
-        Path *b = &out->back();
-        std::reverse(b->begin(), b->end());
-      }
-      CopyAndForceOrientation(*child, !orientation, out);
-    }
-  }
-
-  bool CopyAndForceOrientation(const Paths &paths, bool orientation, Paths *out) {
-    // Use Clipper to convert paths to a PolyTree.
-    Clipper c;
-    PolyTree solution;
-    if (!c.AddPaths(paths, ptSubject, true) ||
-        !c.Execute(ctUnion, solution))
-      return false;
-    out->clear();
-    CopyAndForceOrientation(solution, orientation, out);
-    return true;
-  }
-
-  bool ComputeOffset(const Paths &, double, Paths *) MUST_USE_RESULT;
-  bool ComputeOffset(const Paths &paths, double amount, Paths *result) {
-    // Previous operations can leave small artifacts (e.g. self-intersecting
-    // polygons) which ClipperOffset cannot handle. CleanPolygons fixes at least
-    // some of these cases.
-    Paths cleaned(paths.size());  // CleanPolygons does not resize 'cleaned'.
-    CleanPolygons(paths, cleaned);
-    Paths tmp_paths;
-    if (!CopyAndForceOrientation(cleaned, true, &tmp_paths))
-      return false;
-
-    ClipperOffset co;
-    co.ArcTolerance = kQuantaPerInch / 1000;
-    co.AddPaths(tmp_paths, jtRound, etClosedPolygon);
-    co.Execute(*result, InchesToQuanta(amount));
-    return true;
   }
 
   void CutToPolygon(const Paths &cut, double radius, Paths *result) {
@@ -1005,6 +692,7 @@ namespace {
     fprintf(fp, "stroke\n");
   }
 
+  // TODO: Switch to writing a debug svg.
   void WriteCutsToPs(const std::string &path,
                      const std::vector<CutPath> &ordered_cuts) {
     FILE *fp = fopen(path.c_str(), "w");
@@ -1091,7 +779,8 @@ int main(int argc, char *argv[]) {
   const cInt width = SvgToQuanta(diagram->width);
   const cInt height = SvgToQuanta(diagram->height);
   {
-    const bool r = SvgToPolygons(*diagram, config, &layers);
+    const bool r = SvgToPolygons(*diagram, config.color_to_elevation,
+                                 config.as_drawn, &layers);
     svgtiny_free(diagram);
     if (!r) {
       fprintf(stderr, "svg processing failed.\n");
@@ -1132,6 +821,7 @@ int main(int argc, char *argv[]) {
           Paths tmp;
           uniq_seg.RemoveRedundant(path[i], path[i + 1], &tmp);
           for (const Path &p : tmp) {
+            // TODO: encode this in the data type instead of using assert.
             assert(p.size() == 2);
             if (!new_path.empty() && new_path.back().back() == p.front()) {
               new_path.back().push_back(p.back());
