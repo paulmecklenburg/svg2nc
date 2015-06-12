@@ -1,6 +1,7 @@
 #include "svg.h"
 
 #include <math.h>
+#include <memory>
 #include <stdio.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -8,10 +9,14 @@
 
 #include "common.h"
 #include "path_util.h"
+extern "C" {
+#include "svgtiny.h"
+}  // extern "C"
 
 using ClipperLib::IntPoint;
 using ClipperLib::Path;
 using ClipperLib::Paths;
+using ClipperLib::cInt;
 
 namespace {
 
@@ -39,6 +44,16 @@ namespace {
 
     fclose(fd);
     return true;
+  }
+
+  const double kSvgUnitsPerInch = 90;
+
+  double SvgToInches(double x) {
+    return x / kSvgUnitsPerInch;
+  }
+
+  cInt SvgToQuanta(double x) {
+    return InchesToQuanta(SvgToInches(x));
   }
 
   void BezierPoint(double x0, double y0,
@@ -141,48 +156,59 @@ namespace {
     return false;
   }
 
-}  // namespace
 
-struct svgtiny_diagram *LoadSvg(const char *path) {
-  std::string contents;
-  if (!ReadFileToString(path, &contents)) {
+  struct svgtiny_diagram *LoadSvg(const char *path) {
+    std::string contents;
+    if (!ReadFileToString(path, &contents)) {
+      return nullptr;
+    }
+    struct svgtiny_diagram *diagram = svgtiny_create();
+    const svgtiny_code code = svgtiny_parse(diagram,
+                                            contents.data(), contents.size(),
+                                            path, 100000, 100000);
+    switch (code) {
+    case svgtiny_OK:
+      return diagram;
+    case svgtiny_OUT_OF_MEMORY:
+      fprintf(stderr, "svgtiny_OUT_OF_MEMORY\n");
+      break;
+    case svgtiny_LIBDOM_ERROR:
+      fprintf(stderr, "svgtiny_LIBDOM_ERROR\n");
+      break;
+    case svgtiny_NOT_SVG:
+      fprintf(stderr, "svgtiny_NOT_SVG\n");
+      break;
+    case svgtiny_SVG_ERROR:
+      fprintf(stderr, "svgtiny_SVG_ERROR: line %i: %s\n",
+              diagram->error_line,
+              diagram->error_message);
+      break;
+    }
+    svgtiny_free(diagram);
     return nullptr;
   }
-  struct svgtiny_diagram *diagram = svgtiny_create();
-  const svgtiny_code code = svgtiny_parse(diagram,
-                                          contents.data(), contents.size(),
-                                          path, 100000, 100000);
-  switch (code) {
-  case svgtiny_OK:
-    return diagram;
-  case svgtiny_OUT_OF_MEMORY:
-    fprintf(stderr, "svgtiny_OUT_OF_MEMORY\n");
-    break;
-  case svgtiny_LIBDOM_ERROR:
-    fprintf(stderr, "svgtiny_LIBDOM_ERROR\n");
-    break;
-  case svgtiny_NOT_SVG:
-    fprintf(stderr, "svgtiny_NOT_SVG\n");
-    break;
-  case svgtiny_SVG_ERROR:
-    fprintf(stderr, "svgtiny_SVG_ERROR: line %i: %s\n",
-            diagram->error_line,
-            diagram->error_message);
-    break;
-  }
-  svgtiny_free(diagram);
-  return nullptr;
-}
 
-bool SvgToPolygons(const struct svgtiny_diagram &diagram,
+}  // namespace
+
+bool SvgToPolygons(const char *file_name,
                    const std::map<uint32_t, double> &color_to_elevation,
                    const bool as_drawn,
-                   std::map<double, Paths> *layers) {
-  for (unsigned i = 0; i < diagram.shape_count; i++) {
-    const auto &shape = diagram.shape[i];
+                   std::map<double, Paths> *layers,
+                   cInt *width, cInt *height) {
+  std::unique_ptr<struct svgtiny_diagram, decltype(&svgtiny_free)> diagram(
+      LoadSvg(file_name), svgtiny_free);
+  if (!diagram)
+    return false;
+  if (width)
+    *width = SvgToQuanta(diagram->width);
+  if (height)
+    *height = SvgToQuanta(diagram->height);
+
+  for (unsigned i = 0; i < diagram->shape_count; i++) {
+    const auto &shape = diagram->shape[i];
     if (shape.path) {
       Paths paths;
-      if (!ConvertPath(shape.path, shape.path_length, diagram.height, &paths)) {
+      if (!ConvertPath(shape.path, shape.path_length, diagram->height, &paths)) {
         fprintf(stderr, "unable to process path.\n");
         return false;
       }

@@ -15,9 +15,6 @@
 #include "path_util.h"
 #include "svg.h"
 #include "uniq_seg.h"
-extern "C" {
-#include "svgtiny.h"
-}  // extern "C"
 
 using ClipperLib::Area;
 using ClipperLib::cInt;
@@ -771,21 +768,12 @@ namespace {
 
 int main(int argc, char *argv[]) {
   const Config config = ParseArgs(argc, argv);
-  struct svgtiny_diagram *diagram = LoadSvg(config.svg_path.c_str());
-  if (!diagram)
-    return EXIT_FAILURE;
 
   std::map<double, Paths> layers;
-  const cInt width = SvgToQuanta(diagram->width);
-  const cInt height = SvgToQuanta(diagram->height);
-  {
-    const bool r = SvgToPolygons(*diagram, config.color_to_elevation,
-                                 config.as_drawn, &layers);
-    svgtiny_free(diagram);
-    if (!r) {
-      fprintf(stderr, "svg processing failed.\n");
-      return EXIT_FAILURE;
-    }
+  cInt width, height;
+  if (!SvgToPolygons(config.svg_path.c_str(), config.color_to_elevation,
+                     config.as_drawn, &layers, &width, &height)) {
+    return EXIT_FAILURE;
   }
 
   // Compute layer by layer cuts as closed loops.
