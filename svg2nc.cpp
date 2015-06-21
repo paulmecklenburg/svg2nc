@@ -1,10 +1,11 @@
-#include <array>
+// #include <array>
 #include <limits>
 #include <map>
+#include <set>
 #include <string>
+#include <vector>
 
-#include <assert.h>
-#include <ANN/ANN.h>
+// #include <ANN/ANN.h>
 #include <getopt.h>
 #include <inttypes.h>
 #include <math.h>
@@ -22,10 +23,10 @@ using ClipperLib::Clipper;
 using ClipperLib::ClipperOffset;
 using ClipperLib::ctIntersection;
 using ClipperLib::etClosedLine;
-using ClipperLib::etOpenButt;
+// using ClipperLib::etOpenButt;
 using ClipperLib::IntPoint;
 using ClipperLib::jtRound;
-using ClipperLib::jtSquare;
+// using ClipperLib::jtSquare;
 using ClipperLib::ptSubject;
 using ClipperLib::ptClip;
 using ClipperLib::Path;
@@ -44,8 +45,8 @@ namespace {
     double max_pass_depth = .25;
     double spindle_speed = 1000.;
     double through_elevation = 0;
+    double hole_ratio = 4;
     bool verbose = false;
-    int part = -1;
     std::string svg_path;
     std::string output_ps_path;
     std::string output_nc_path;
@@ -71,7 +72,8 @@ namespace {
         "  -o --mill-overlap=<fraction>\n"
         "     Fraction of a cut to overlap with adjacent cuts.\n"
         "  -p --ps-file=<path>        Write the cut plan to a .ps file.\n"
-        "  -r --part=<number>         Only process the specified number part.\n"
+        "  -r --hole-ratio=<ratio>    Bit area coefficient to define hole \n"
+        "     threshold. Negative value disables.\n"
         "  -s --spindle_speed=<rpm>   Set the spindle speed.\n"
         "  -t --through-elevatation=<inches>\n"
         "     The elevation to use while cutting holes and outlines.\n"
@@ -126,11 +128,11 @@ namespace {
       {"feed-rate", required_argument, nullptr, 'f'},
       {"help", no_argument, nullptr, 'h'},
       {"hole-color", required_argument, nullptr, 'e'},
+      {"hole-ratio", required_argument, nullptr, 'r'},
       {"material-thickness", required_argument, nullptr, 'm'},
       {"max-pass-depth", required_argument, nullptr, 'x'},
       {"mill-overlap", required_argument, nullptr, 'o'},
       {"nc-file", required_argument, nullptr, 'n'},
-      {"part", required_argument, nullptr, 'r'},
       {"ps-file", required_argument, nullptr, 'p'},
       {"spindle-speed", required_argument, nullptr, 's'},
       {"through-elevation", required_argument, nullptr, 't'},
@@ -178,7 +180,7 @@ namespace {
         config.output_ps_path = optarg;
         break;
       case 'r':
-        config.part = atoi(optarg);
+        config.hole_ratio = atof(optarg);
         break;
       case 's':
         config.spindle_speed = atof(optarg);
@@ -267,101 +269,99 @@ namespace {
     return true;
   }
 
-  bool CanSlide(const IntPoint &p0, const IntPoint &p1,
-                double radius, const Paths &layers_above) {
-    if (layers_above.empty())
-      return true;
+  // bool CanSlide(const IntPoint &p0, const IntPoint &p1,
+  //               double radius, const Paths &layers_above) {
+  //   if (layers_above.empty())
+  //     return true;
 
-    Paths swept_path;
-    {  // Create a swept path for the tool. Ideal would use 'jtRound' with
-      // exactly radius. Instead etOpenButt is used. We assume that the start
-      // and end are already safe and make the path a wider (kEpsilon) to give
-      // a bit of extra space. Meatspace is not as precise as math.
-      ClipperOffset co;
-      const Path line{p0, p1};
-      co.AddPath(line, jtSquare /* doesn't actually matter */, etOpenButt);
-      const double kEpsilon = 0.005;
-      co.Execute(swept_path, InchesToQuanta(radius + kEpsilon));
-    }
+  //   Paths swept_path;
+  //   {  // Create a swept path for the tool. Ideal would use 'jtRound' with
+  //     // exactly radius. Instead etOpenButt is used. We assume that the start
+  //     // and end are already safe and make the path wider (kEpsilon) to give
+  //     // a bit of extra space. Meatspace is not as precise as math.
+  //     ClipperOffset co;
+  //     const Path line{p0, p1};
+  //     co.AddPath(line, jtSquare /* doesn't actually matter */, etOpenButt);
+  //     const double kEpsilon = 0.005;
+  //     co.Execute(swept_path, InchesToQuanta(radius + kEpsilon));
+  //   }
 
-    Clipper c;
-    if (!c.AddPaths(layers_above, ptSubject, true) ||
-        !c.AddPaths(swept_path, ptClip, true))
-      return false;  // TODO: report error.
+  //   Clipper c;
+  //   if (!c.AddPaths(layers_above, ptSubject, true) ||
+  //       !c.AddPaths(swept_path, ptClip, true))
+  //     return false;  // TODO: report error.
 
-    Paths intersection;
-    return c.Execute(ctIntersection, intersection) && intersection.empty();
-  }
+  //   Paths intersection;
+  //   return c.Execute(ctIntersection, intersection) && intersection.empty();
+  // }
 
-  void MergeCut(const Path &cut,
-                const Paths &layers_above,
-                double diameter,
-                Paths *all_cuts) {
-    if (all_cuts->empty()) {
-      all_cuts->push_back(cut);
-      return;
-    }
+  // void MergeCut(const Path &cut,
+  //               const Paths &layers_above,
+  //               double diameter,
+  //               Paths *all_cuts) {
+  //   if (all_cuts->empty()) {
+  //     all_cuts->push_back(cut);
+  //     return;
+  //   }
 
-    std::vector<std::array<ANNcoord, 2>> point_data;
-    for (const auto &p : *all_cuts) {
-      for (const auto &pt : p) {
-        point_data.push_back(std::array<ANNcoord, 2>{
-            QuantaToInches(pt.X), QuantaToInches(pt.Y)});
-      }
-    }
+  //   std::vector<std::array<ANNcoord, 2>> point_data;
+  //   for (const auto &p : *all_cuts) {
+  //     for (const auto &pt : p) {
+  //       point_data.push_back(std::array<ANNcoord, 2>{
+  //           QuantaToInches(pt.X), QuantaToInches(pt.Y)});
+  //     }
+  //   }
 
-    std::vector<ANNpoint> points;
-    for (auto &pd : point_data) {
-      points.push_back(pd.data());
-    }
+  //   std::vector<ANNpoint> points;
+  //   for (auto &pd : point_data) {
+  //     points.push_back(pd.data());
+  //   }
 
-    ANNkd_tree tree(points.data(), points.size(), 2);
+  //   ANNkd_tree tree(points.data(), points.size(), 2);
 
-    ANNidx nearest_idx = 0;
-    ANNdist nearest_dist = std::numeric_limits<ANNdist>::max();
-    size_t cut_pos = 0;
-    for (size_t i = 0; i < cut.size(); ++i) {
-      const auto &pt = cut[i];
-      std::array<ANNcoord, 2> q{QuantaToInches(pt.X), QuantaToInches(pt.Y)};
-      ANNidx idx;
-      ANNdist dist;
-      tree.annkSearch(q.data(), 1, &idx, &dist);
-      if (dist < nearest_dist) {
-        nearest_dist = dist;
-        nearest_idx = idx;
-        cut_pos = i;
-      }
-    }
+  //   ANNidx nearest_idx = 0;
+  //   ANNdist nearest_dist = std::numeric_limits<ANNdist>::max();
+  //   size_t cut_pos = 0;
+  //   for (size_t i = 0; i < cut.size(); ++i) {
+  //     const auto &pt = cut[i];
+  //     std::array<ANNcoord, 2> q{QuantaToInches(pt.X), QuantaToInches(pt.Y)};
+  //     ANNidx idx;
+  //     ANNdist dist;
+  //     tree.annkSearch(q.data(), 1, &idx, &dist);
+  //     if (dist < nearest_dist) {
+  //       nearest_dist = dist;
+  //       nearest_idx = idx;
+  //       cut_pos = i;
+  //     }
+  //   }
 
-    Path *dst = nullptr;
-    for (auto &p : *all_cuts) {
-      if (nearest_idx < ANNidx(p.size())) {
-        dst = &p;
-        break;
-      }
-      nearest_idx -= p.size();
-    }
+  //   Path *dst = nullptr;
+  //   for (auto &p : *all_cuts) {
+  //     if (nearest_idx < ANNidx(p.size())) {
+  //       dst = &p;
+  //       break;
+  //     }
+  //     nearest_idx -= p.size();
+  //   }
 
-    const int kMaxSlideDiameters = 2;
-    if (sqrt(nearest_dist) <= diameter * kMaxSlideDiameters &&
-        CanSlide(cut[cut_pos], (*dst)[nearest_idx], diameter * .5, layers_above)) {
-      Path to_insert;
-      to_insert.push_back((*dst)[nearest_idx]);
-      to_insert.insert(to_insert.end(), cut.begin() + cut_pos, cut.end());
-      to_insert.insert(to_insert.end(), cut.begin(), cut.begin() + cut_pos + 1);
-      dst->insert(dst->begin() + nearest_idx, to_insert.begin(), to_insert.end());
-    } else {
-      all_cuts->push_back(cut);
-    }
-  }
+  //   const int kMaxSlideDiameters = 2;
+  //   if (sqrt(nearest_dist) <= diameter * kMaxSlideDiameters &&
+  //       CanSlide(cut[cut_pos], (*dst)[nearest_idx], diameter * .5, layers_above)) {
+  //     Path to_insert;
+  //     to_insert.push_back((*dst)[nearest_idx]);
+  //     to_insert.insert(to_insert.end(), cut.begin() + cut_pos, cut.end());
+  //     to_insert.insert(to_insert.end(), cut.begin(), cut.begin() + cut_pos + 1);
+  //     dst->insert(dst->begin() + nearest_idx, to_insert.begin(), to_insert.end());
+  //   } else {
+  //     all_cuts->push_back(cut);
+  //   }
+  // }
 
   bool MillSurface(const Config &,
-                   const Paths &,
                    const Paths &,
                    Paths *) MUST_USE_RESULT;
   bool MillSurface(const Config &config,
                    const Paths &surface,
-                   const Paths &layers_above,
                    Paths *cuts) {
     Paths remaining(surface);
     while (!remaining.empty()) {
@@ -379,9 +379,7 @@ namespace {
       if (cut.empty())
         cut.swap(remaining);
 
-      for (const auto &c : cut) {
-        MergeCut(c, layers_above, config.diameter, cuts);
-      }
+      cuts->insert(cuts->end(), cut.begin(), cut.end());
 
       if (!remaining.empty()) {
         Paths mask;
@@ -393,57 +391,124 @@ namespace {
     return true;
   }
 
-  struct LayerCuts {
-    // Direction of edge cuts is important.
-    Paths edges;
-
-    // Direction of surface cuts is not important.
-    Paths surface;
+  struct CutLoop;
+  struct Segment {
+    CutLoop *parent;
+    // The open path for this particular cut.
+    Path path;
   };
 
-  bool ComputeCuts(const Config &,
-                   const std::map<double, Paths> &,
-                   std::map<double, LayerCuts> *) MUST_USE_RESULT;
-  bool ComputeCuts(const Config &config,
+  struct CutLoop {
+    double elevation;
+    // Closed path. Full loop.
+    Path path;
+    // Union of all polygons with elevations above this. May be shard with other paths.
+    std::shared_ptr<Paths> mask;
+    // List of other CutLoops blocked by this one.
+    std::vector<CutLoop*> blocks;
+    // Sub-segments of this loop that actually need to be cut.
+    std::vector<Segment> segments;
+  };
+
+  void ToCutLoops(const Paths &in_cuts,
+                  double elevation,
+                  const Paths &higher_layers,
+                  std::vector<CutLoop> *out_cuts) {
+    std::shared_ptr<Paths> mask(new Paths(higher_layers));
+    for (const Path &c : in_cuts) {
+      out_cuts->push_back(CutLoop{elevation, c, mask, {}, {}});
+    }
+  }
+
+  void ComputeCuts(const Config &config,
                    const std::map<double, Paths> &layers,
-                   std::map<double, LayerCuts> *elevation_to_cuts) {
+                   std::vector<CutLoop> *cuts) {
     Paths higher_layer_union;
     for (auto iter = layers.rbegin(); iter != layers.rend(); ++iter) {
       const double elevation = iter->first;
       const Paths &polygons = iter->second;
       if (elevation < config.material_thickness) {
         Paths mill_area = polygons;
-        LayerCuts *cuts = &(*elevation_to_cuts)[elevation];
+        Paths tmp_cuts;
         if (!higher_layer_union.empty()) {
           // Mill the edges of the layer above.
-          if (!MillEdges(config, higher_layer_union, &cuts->edges))
-            return false;
-
+          OR_DIE(MillEdges(config, higher_layer_union, &tmp_cuts));
           Paths tmp;
-          if (!ComputeOffset(higher_layer_union, config.diameter, &tmp))
-            return false;
-          if (!SubtractFrom(tmp, &mill_area))
-            return false;
+          OR_DIE(ComputeOffset(higher_layer_union, config.diameter, &tmp));
+          OR_DIE(SubtractFrom(tmp, &mill_area));
         }
-        if (!MillSurface(config, mill_area, higher_layer_union, &cuts->surface))
-          return false;
+        OR_DIE(MillSurface(config, mill_area, &tmp_cuts));
+        ToCutLoops(tmp_cuts, elevation, higher_layer_union, cuts); 
       }
-      if (!UnionInto(polygons, &higher_layer_union))
-        return false;
+      OR_DIE(UnionInto(polygons, &higher_layer_union));
     }
-    return MillEdges(config,
-                     higher_layer_union,
-                     &(*elevation_to_cuts)[config.through_elevation].edges);
+    Paths tmp_cuts;
+    OR_DIE(MillEdges(config, higher_layer_union, &tmp_cuts));
+    ToCutLoops(tmp_cuts, config.through_elevation, higher_layer_union, cuts); 
   }
 
-  void ClosedToOpen(Paths *paths) {
-    for (auto &p : *paths) {
-      if (p.back() != p.front()) {
-        p.push_back(p.front());
+  void InsertCutLoop(std::map<CutLoop*, std::vector<CutLoop*> > *roots,
+                     CutLoop *cl) {
+    std::vector<CutLoop*> tmp;
+    std::vector<CutLoop*> to_erase;
+    for (auto &iter : *roots) {
+      Clipper c;
+      Paths intersection;
+      OR_DIE(c.AddPath(cl->path, ptSubject, true) &&
+             c.AddPath(iter.first->path, ptClip, true) &&
+             c.Execute(ctIntersection, intersection));
+      if (intersection.empty())
+        continue;
+      const double cla = fabs(Area(cl->path));
+      const double pa = fabs(Area(iter.first->path));
+      if (pa >= cla) {
+        OR_DIE(tmp.empty());
+        iter.second.push_back(cl);
+        return;
+      }
+      tmp.insert(tmp.end(), iter.second.begin(), iter.second.end());
+      tmp.push_back(iter.first);
+      to_erase.push_back(iter.first);
+    }
+    for (auto cl : to_erase)
+      roots->erase(cl);
+    (*roots)[cl] = tmp;
+  }
+
+  std::vector<CutLoop*> ComputeBlocks(std::vector<CutLoop*> *cut_loops,
+                                      const double hole_area) {
+    // Generate a map of disjoint cuts and a list of cuts inside each.
+    std::map<CutLoop*, std::vector<CutLoop*> > roots;
+    for (CutLoop *cl : *cut_loops) {
+      InsertCutLoop(&roots, cl);
+    }
+    // Recursively find the disjoint cuts within each child. Update children
+    // to block their parents.
+    for (auto &iter : roots) {
+      for (auto &grand_child : ComputeBlocks(&iter.second, hole_area)) {
+        grand_child->blocks.push_back(iter.first);
       }
     }
+    // Find large hole cuts. Have all other cuts block them. This way the other
+    // cuts are performed first.
+    std::vector<CutLoop*> holes;
+    std::vector<CutLoop*> nonholes;
+    for (auto &iter : roots) {
+      const bool is_hole = iter.second.empty() && iter.first->elevation <= 0. &&
+        fabs(Area(iter.first->path)) >= hole_area;
+      (is_hole ? holes : nonholes).push_back(iter.first);
+    }
+    for (auto nh : nonholes) {
+      nh->blocks.insert(nh->blocks.end(), holes.begin(), holes.end());
+    }
+    // Return a list of the children.
+    std::vector<CutLoop*> children;
+    for (auto &iter : roots) {
+      children.push_back(iter.first);
+    }
+    return children;
   }
-  
+
   bool OnOrInside(const Path &, const Path &) MUST_USE_RESULT;
   bool OnOrInside(const Path &inner, const Path &outer) {
     for (const auto &pt : inner) {
@@ -455,132 +520,76 @@ namespace {
     return true;
   }
 
-  bool TrimCutsToBoundingBox(cInt, cInt, Paths *) MUST_USE_RESULT;
-  bool TrimCutsToBoundingBox(cInt width, cInt height, Paths *cuts) {
+  bool TrimCutToBoundingBox(cInt, cInt, const Path &in, Paths *out) MUST_USE_RESULT;
+  bool TrimCutToBoundingBox(cInt width, cInt height, const Path &in, Paths *out) {
+    out->clear();
     const Path bbox{{0, 0}, {width, 0}, {width, height}, {0, height}};
-    Paths saved;
-    saved.reserve(cuts->size());
-    Clipper c;
-    for (auto &cut : *cuts) {
-      // This test is done to work around a clipper bug where segments are
-      // dropped from open paths with the final point the same as the starting
-      // point in the *output*. This only happens with paths that aren't clipped
-      // at all.
-      if (OnOrInside(cut, bbox)) {
-        saved.push_back(Path());
-        saved.back().swap(cut);
-      } else {
-        if (!c.AddPath(cut, ptSubject, false))
-          return false;
-      }
+    // This test is done to work around a clipper bug where segments are
+    // dropped from open paths with the final point the same as the starting
+    // point in the *output*. This only happens with paths that aren't clipped
+    // at all.
+    if (OnOrInside(in, bbox)) {
+      out->push_back(in);
+      return true;
     }
-    cuts->clear();
+    Clipper c;
+    if (!c.AddPath(in, ptSubject, false))
+      return false;
     PolyTree solution;
     if (!c.AddPath(bbox, ptClip, true) ||
         !c.Execute(ctIntersection, solution))
       return false;
-    OpenPathsFromPolyTree(solution, *cuts);
-    cuts->insert(cuts->end(), saved.begin(), saved.end());
+    OpenPathsFromPolyTree(solution, *out);
     return true;    
   }
 
-  struct CutPath {
-    double elevation;
-    Path path;
-  };
+  void ComputeSegments(cInt width, cInt height, std::vector<CutLoop*> *cut_loops) {
+    const auto ElevationLess = [](const CutLoop *a, const CutLoop *b) -> bool {
+      return a->elevation < b->elevation;
+    };
+    std::sort(cut_loops->begin(), cut_loops->end(), ElevationLess);
 
-  struct Part {
-    std::vector<CutPath> interior;
-    std::vector<CutPath> perimeter;
-  };
-
-  Part *ResizeGet(std::vector<Part> *t, size_t i) {
-    if (t->size() <= i)
-      t->resize(i + 1);
-    return &(*t)[i];
-  }
-
-  bool AddCutPathToPart(
-      const CutPath &, const Paths &, std::vector<Part> *) MUST_USE_RESULT;
-  bool AddCutPathToPart(
-      const CutPath &cp, const Paths &perimeters, std::vector<Part> *parts) {
-    for (size_t i = 0; i < perimeters.size(); ++i) {
-      const Path &perimeter = perimeters[i];
-      if (cp.path.front() == cp.path.back()) {
-        const Path closed_cp(cp.path.begin(), cp.path.end() - 1);
-        const double cp_area = fabs(Area(closed_cp));
-        const double perimeter_area = fabs(Area(perimeter));
-        Paths unn{perimeter};
-        if (!UnionInto(Paths{closed_cp}, &unn))
-          return false;
-        if (unn.size() > 1)
-          continue;  // Disjoint
-        const double union_area = fabs(Area(unn[0]));
-        if (union_area < perimeter_area + cp_area * .5) {
-          bool is_interior = perimeter_area - cp_area > perimeter_area * .00001;
-          if (cp.elevation > 0. || is_interior) {
-            ResizeGet(parts, i)->interior.push_back(cp);
+    UniqSeg uniq_seg;
+    for (CutLoop *cl : *cut_loops) {
+      const Path &path = cl->path;
+      Paths segments;
+      for (size_t i = 0; i < path.size(); ++i) {
+        Paths tmp;
+        uniq_seg.RemoveRedundant(path[i], path[(i + 1) % path.size()], &tmp);
+        for (const Path &p : tmp) {
+          // TODO: encode this in the data type.
+          OR_DIE(p.size() == 2);
+          if (!segments.empty() && segments.back().back() == p.front()) {
+            segments.back().push_back(p.back());
           } else {
-            ResizeGet(parts, i)->perimeter.push_back(cp);
-          }
-          return true;
-        }
-      } else {
-        // PointInPolygon isn't 100% accurate, so a heuristic is used. Assume
-        // parts are reasonably spaced. The first intersection is accepted.
-        for (const auto &pt : cp.path) {
-          if (PointInPolygon(pt, perimeter) != 0) {
-            ResizeGet(parts, i)->interior.push_back(cp);
-            return true;
+            segments.push_back(p);
           }
         }
       }
-    }
-    ResizeGet(parts, perimeters.size())->interior.push_back(cp);
-    return true;
-  }
-
-  bool FindDisjointParts(const std::vector<CutPath> &, std::vector<Part> *) MUST_USE_RESULT;
-  bool FindDisjointParts(const std::vector<CutPath> &all, std::vector<Part> *parts) {
-    parts->clear();
-    Paths unn;
-    for (const auto &cp : all) {
-      if (cp.elevation <= 0. && cp.path.front() == cp.path.back()) {
-        Paths paths{cp.path};
-        paths.front().pop_back();
-        if (!UnionInto(paths, &unn))
-          return false;        
+      if (segments.size() > 1 &&
+          segments.front().front() == segments.back().back()) {
+        // The end of the last segment connects back to the beginning of the
+        // first segment. Merge them.
+        segments.back().insert(segments.back().end(),
+                               segments.front().begin() + 1,
+                               segments.front().end());
+        segments.front().swap(segments.back());
+        segments.pop_back();
+      }
+      for (const auto &segment : segments) {
+        Paths tmp;
+        OR_DIE(TrimCutToBoundingBox(width, height, segment, &tmp));
+        for (const Path &p : tmp) {
+          cl->segments.push_back(Segment{cl, p});
+        }
       }
     }
-    for (const auto &cp : all) {
-      if (!AddCutPathToPart(cp, unn, parts))
-        return false;
-    }
-    return true;
-  }
-
-  std::vector<double> PassElevations(const Config &config, double elevation) {
-    const double delta = config.material_thickness - elevation;
-    const int passes = ceil(delta / config.max_pass_depth);
-    std::vector<double> result;
-    for (int i = passes - 1; i >= 0; --i) {
-      result.push_back(i * (delta / passes) + elevation);
-    }
-    return result;
   }
 
   cInt DistanceSquared(const IntPoint &a, const IntPoint &b) {
     const cInt dx = a.X - b.X;
     const cInt dy = a.Y - b.Y;
     return dx*dx + dy*dy;
-  }
-
-  IntPoint LastPosition(std::vector<CutPath> &history) {
-    if (history.empty()) {
-      return IntPoint{0, 0};
-    } else {
-      return history.back().path.back();
-    }
   }
 
   cInt ClosestPointInPath(
@@ -599,76 +608,81 @@ namespace {
     return min_d2;
   }
 
-  cInt DistanceSquaredToCutPaths(const IntPoint &last_pos,
-                                 const std::vector<CutPath> &paths) {
+  Segment *RemoveClosestSegment(const IntPoint &last_pos,
+                                std::set<Segment*> *segs,
+                                size_t *min_index) {
     cInt min_d2 = std::numeric_limits<cInt>::max();
-    for (const auto &cp : paths) {
-      min_d2 = std::min(min_d2, ClosestPointInPath(last_pos, cp.path));
-    }
-    return min_d2;
-  }
-
-  Part RemoveClosestPart(const IntPoint &last_pos, std::vector<Part> *parts) {
-    size_t closest = 0;
-    cInt min_d2 = std::numeric_limits<cInt>::max();
-    for (size_t i = 0; i < parts->size(); ++i) {
-      const Part &part = (*parts)[i];
-      const cInt d2 = std::min(
-          DistanceSquaredToCutPaths(last_pos, part.interior),
-          DistanceSquaredToCutPaths(last_pos, part.perimeter));
-      if (d2 < min_d2) {
-        min_d2 = d2;
-        closest = i;
-      }
-    }
-    Part res = (*parts)[closest];
-    if (closest + 1 != parts->size()) {
-      std::swap((*parts)[closest], parts->back());
-    }
-    parts->pop_back();
-    return res;
-  }
-
-  void MoveNearestCutPathAndLayer(const Config &config,
-                                  std::vector<CutPath> *input,
-                                  std::vector<CutPath> *output) {
-    const IntPoint last_pos = LastPosition(*output);
-    // Find the point in the remaining cuts closest to the current position.
-    // For non-loop cuts, only consider starting at the beginning of the cut.
-    CutPath *cp = nullptr;
-    size_t ind;
-    cInt min_d2 = std::numeric_limits<cInt>::max();
-    for (auto &cpt : *input) {
+    Segment *min_seg = nullptr;
+    for (const auto &seg : *segs) {
       size_t index;
-      const cInt d2 = ClosestPointInPath(last_pos, cpt.path, &index);
+      const cInt d2 = ClosestPointInPath(last_pos, seg->path, &index);
       if (d2 < min_d2) {
-        ind = index;
-        cp = &cpt;
         min_d2 = d2;
+        *min_index = index;
+        min_seg = seg;
       }
     }
+    segs->erase(min_seg);
+    return min_seg;
+  }
 
-    CutPath new_cp;
-    new_cp.elevation = cp->elevation;
-    if (ind == 0) {
-      new_cp.path = cp->path;
+  IntPoint LastPosition(std::vector<const Segment*> &history) {
+    if (history.empty()) {
+      return IntPoint{0, 0};
     } else {
-      new_cp.path.insert(new_cp.path.end(),
-                         cp->path.begin() + ind, cp->path.end());
-      new_cp.path.insert(new_cp.path.end(),
-                         cp->path.begin() + 1, cp->path.begin() + ind + 1);
+      return history.back()->path.back();
     }
+  }
 
-    // Remove cp from input.
-    if (cp != &input->back()) {
-      std::swap(*cp, input->back());
+  void ComputeOrdering(const std::vector<CutLoop*> &cut_loops,
+                       std::vector<const Segment*> *segments) {
+    std::map<const CutLoop*, int> block_count;
+    for (const auto cl : cut_loops) {
+      for (const auto target : cl->blocks) {
+        if (!cl->segments.empty()) {
+          block_count[target] += cl->segments.size();
+        }
+      }
     }
-    input->pop_back();
+    std::set<Segment*> open;
+    for (auto cl : cut_loops) {
+      if (!block_count.count(cl)) {
+        for (auto &seg : cl->segments) {
+          open.insert(&seg);
+        }
+      }
+    }
+    while (!open.empty()) {
+      size_t index;
+      Segment *next =
+        RemoveClosestSegment(LastPosition(*segments), &open, &index);
+      if (index) {
+        Path tmp(next->path.begin() + index, next->path.end());
+        tmp.insert(tmp.end(), next->path.begin() + 1, next->path.begin() + index + 1);
+        next->path.swap(tmp);
+      }
+      segments->push_back(next);
+      for (CutLoop *target : next->parent->blocks) {
+        if (!(--block_count[target])) {
+          for (Segment &seg : target->segments) {
+            open.insert(&seg);
+          }
+        }
+      }
+    }
+    for (const auto &iter : block_count) {
+      OR_DIE(!iter.second);
+    }
+  }
 
-    for (const double elevation : PassElevations(config, new_cp.elevation)) {
-      new_cp.elevation = elevation;
-      output->push_back(new_cp);
+  std::vector<double> PassElevations(const Config &config, double elevation) {
+    const double delta = config.material_thickness - elevation;
+    const int passes = ceil(delta / config.max_pass_depth);
+    std::vector<double> result;
+    for (int i = passes - 1; i >= 0; --i) {
+      result.push_back(i * (delta / passes) + elevation);
     }
+    return result;
   }
 
   double PathLength(const Path &cut) {
@@ -689,6 +703,11 @@ namespace {
     fprintf(fp, "stroke\n");
   }
 
+  struct CutPath {
+    double elevation;
+    Path path;
+  };
+
   // TODO: Switch to writing a debug svg.
   void WriteCutsToPs(const std::string &path,
                      const std::vector<CutPath> &ordered_cuts) {
@@ -699,15 +718,16 @@ namespace {
     }
     fprintf(fp, "0.2 setlinewidth\n");
     IntPoint last(0, 0);
-    bool green = true;
+    double color = 0;
+    double dc = 1. / (ordered_cuts.size() - 1);
     for (const auto &cp : ordered_cuts) {
       // Move
       Path move{last, cp.path.front()};
       fprintf(fp, "1 0 0 setrgbcolor\n");
       AddOpenPathsToPs(move, fp);
       // Cut
-      fprintf(fp, "%s setrgbcolor\n", green ? "0 1 0" : "0 0 1");
-      green = !green;
+      fprintf(fp, "0 %.3f %.3f setrgbcolor\n", color, 1. - color);
+      color += dc;
       AddOpenPathsToPs(cp.path, fp);
       last = cp.path.back();
     }
@@ -776,100 +796,30 @@ int main(int argc, char *argv[]) {
     return EXIT_FAILURE;
   }
 
-  // Compute layer by layer cuts as closed loops.
-  std::map<double, LayerCuts> elevation_to_cuts;
-  if (!ComputeCuts(config, layers, &elevation_to_cuts)) {
-    fprintf(stderr, "failed to compute cut paths.\n");
-    return EXIT_FAILURE;
-  }
+  std::vector<CutLoop> cut_loops_storage;
+  ComputeCuts(config, layers, &cut_loops_storage);
 
-  for (auto &iter : elevation_to_cuts) {
-    // Convert the cuts to open seqment sequences.
-    ClosedToOpen(&iter.second.edges);
-    ClosedToOpen(&iter.second.surface);
+  std::vector<CutLoop*> cut_loops;
+  for (CutLoop &cl : cut_loops_storage)
+    cut_loops.push_back(&cl);
 
-    // Clip to the size of the input drawing.
-    // TODO: This should probably be removed. The later part selection code
-    // can fail if trimming has occurred.
-    if (!TrimCutsToBoundingBox(width, height, &iter.second.edges) ||
-        !TrimCutsToBoundingBox(width, height, &iter.second.surface)) {
-      fprintf(stderr, "failed trimming cuts to bounding box.\n");
-      return EXIT_FAILURE;
-    }
-  }
-
-  {  // When multiple cuts are on top of each other, only keep the bottom cut.
-    UniqSeg uniq_seg;
-    for (auto &iter : elevation_to_cuts) {
-      Paths *edges = &iter.second.edges;
-      Paths new_edges;
-      for (const Path &path : *edges) {
-        Paths new_path;
-        for (size_t i = 0; i + 1 < path.size(); ++i) {
-          Paths tmp;
-          uniq_seg.RemoveRedundant(path[i], path[i + 1], &tmp);
-          for (const Path &p : tmp) {
-            // TODO: encode this in the data type instead of using assert.
-            assert(p.size() == 2);
-            if (!new_path.empty() && new_path.back().back() == p.front()) {
-              new_path.back().push_back(p.back());
-            } else {
-              new_path.push_back(p);
-            }
-          }
-        }
-        if (new_path.size() > 1 &&
-            new_path.front().front() == new_path.back().back()) {
-          new_path.back().insert(new_path.back().end(),
-                                 new_path.front().begin(),
-                                 new_path.front().end());
-          new_path.front().swap(new_path.back());
-          new_path.pop_back();
-        }
-        new_edges.insert(new_edges.end(), new_path.begin(), new_path.end());
-      }
-      edges->swap(new_edges);
-    }
-  }
-
-  // Separate cuts into separate pieces that are surrounded by full depth cuts.
-  std::vector<CutPath> all_ordered_cuts;
   {
-    // Fill unordered_cuts with all cuts from all layers.
-    std::vector<CutPath> unordered_cuts;
-    for (const auto &layer : elevation_to_cuts) {
-      const double elevation = layer.first;
-      for (const auto &p : layer.second.edges)
-        unordered_cuts.push_back(CutPath{elevation, p});
-      for (const auto &p : layer.second.surface)
-        unordered_cuts.push_back(CutPath{elevation, p});
-    }
+    const double bit_area = M_PI * config.diameter * config.diameter / 4;
+    ComputeBlocks(&cut_loops, config.hole_ratio * bit_area);
+  }
+  ComputeSegments(width, height, &cut_loops);
 
-    std::vector<Part> parts;
-    if (!FindDisjointParts(unordered_cuts, &parts)) {
-      fprintf(stderr, "failed computing disjoint parts.\n");
-      return EXIT_FAILURE;      
-    }
+  std::vector<const Segment*> segments;
+  ComputeOrdering(cut_loops, &segments);
 
-    if (config.verbose) {
-      printf("Number of distinct parts: %lu\n", parts.size());
-    }
-
-    if (config.part >= 0 && config.part < (signed)parts.size()) {
-      parts = {parts[config.part]};
-    }
-
-    while (!parts.empty()) {
-      Part part = RemoveClosestPart(
-          LastPosition(all_ordered_cuts), &parts);
-      while (!part.interior.empty()) {
-        MoveNearestCutPathAndLayer(
-            config, &part.interior, &all_ordered_cuts);
-      }
-      while (!part.perimeter.empty()) {
-        MoveNearestCutPathAndLayer(
-            config, &part.perimeter, &all_ordered_cuts);
-      }
+  std::vector<CutPath> all_ordered_cuts;
+  for (const Segment *seg : segments) {
+    CutPath cp;
+    cp.path = seg->path;
+    // TODO: Add support for slides.
+    for (const double elevation : PassElevations(config, seg->parent->elevation)) {
+      cp.elevation = elevation;
+      all_ordered_cuts.push_back(cp);
     }
   }
 

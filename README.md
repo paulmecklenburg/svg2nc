@@ -44,15 +44,14 @@ svg2nc does not support color gradients. The elevation of each path must be unif
 svg2nc depends on
 * Clipper (libpolyclipping-dev on debian).
 * Boost (libboost-dev on debian)
-* ANN (libann-dev on debian)
 * libsvgtiny
 
 The following instructions assume a debian-based system and were tested on Ubuntu 14.04.
 
-### git, g++, ANN, Clipper, Boost, Expat, and gperf
-ANN, Clipper and Boost are used directly by svg2nc. Expat and gperf are requried by libsvgtiny.
+### git, g++, Clipper, Boost, Expat, and gperf
+Clipper, and Boost are used directly by svg2nc. Expat and gperf are requried by libsvgtiny.
 <pre>
-$ sudo apt-get install --assume-yes libann-dev libpolyclipping-dev libboost-dev libexpat1-dev gperf git g++
+$ sudo apt-get install --assume-yes libpolyclipping-dev libboost-dev libexpat1-dev gperf git g++
 </pre>
 
 ### libsvgtiny

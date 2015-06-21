@@ -1,6 +1,8 @@
 #ifndef _COMMON_H
 #define _COMMON_H
 
+#include <stdio.h>
+
 #include "polyclipping/clipper.hpp"
 
 #define MUST_USE_RESULT __attribute__((warn_unused_result))
@@ -14,5 +16,11 @@ inline ClipperLib::cInt InchesToQuanta(double x) {
 inline double QuantaToInches(ClipperLib::cInt x) {
   return double(x) / kQuantaPerInch;
 }
+
+#define OR_DIE(exp) \
+  if (!(exp)) { \
+    fprintf(stderr, "DIE: %s:%d %s\n", __FILE__, __LINE__, #exp); \
+    exit(1); \
+  }
 
 #endif  // _COMMON_H
