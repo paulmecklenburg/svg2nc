@@ -9,9 +9,9 @@ for name in ${!svg2nc_args[*]}; do
 	base=test/${name}
 	args=${svg2nc_args[${name}]}
 	set -xe
-	./svg2nc -v -f 12 -l .2 ${args} -n ${base}.ngc~ -p ${base}.ps~ ${base}.svg
+	./svg2nc -v -f 12 -l .2 ${args} -n ${base}.ngc~ -g ${base}.plan.svg~ ${base}.svg
 	set +xe
-	for type in ngc ps; do
+	for type in ngc plan.svg; do
 		diff ${base}.${type} ${base}.${type}~
 		if [ $? -ne 0 ]; then
 			echo "FAILURE: Found differences in ${base}.${type}"

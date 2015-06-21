@@ -20,7 +20,7 @@ inline double QuantaToInches(ClipperLib::cInt x) {
 #define OR_DIE(exp) \
   if (!(exp)) { \
     fprintf(stderr, "DIE: %s:%d %s\n", __FILE__, __LINE__, #exp); \
-    exit(1); \
+    exit(EXIT_FAILURE); \
   }
 
 #endif  // _COMMON_H

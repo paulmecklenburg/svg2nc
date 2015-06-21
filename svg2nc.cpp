@@ -46,7 +46,7 @@ namespace {
     double hole_ratio = 4;
     bool verbose = false;
     std::string svg_path;
-    std::string output_ps_path;
+    std::string output_svg_path;
     std::string output_nc_path;
   };
 
@@ -61,6 +61,7 @@ namespace {
         "  -e --hole-color=<hex color> Color for drawn-on through holes.\n"
         "  -f --feed-rate=<inches per minute>\n"
         "     Specify the feed rate.\n"
+        "  -g --svg-file=<path>        Write the cut plan to a .svg file.\n"
         "  -d --diameter=<inches>     Set the tool DIAMETER.\n"
         "  -l --clearance-space=<inches>\n"
         "     Safety space to use above the part while moving.\n"
@@ -69,7 +70,6 @@ namespace {
         "  -n --nc-file=<path>        Write the cut plan to a .nc file.\n"
         "  -o --mill-overlap=<fraction>\n"
         "     Fraction of a cut to overlap with adjacent cuts.\n"
-        "  -p --ps-file=<path>        Write the cut plan to a .ps file.\n"
         "  -r --hole-ratio=<ratio>    Bit area coefficient to define hole \n"
         "     threshold. Negative value disables.\n"
         "  -s --spindle_speed=<rpm>   Set the spindle speed.\n"
@@ -131,14 +131,14 @@ namespace {
       {"max-pass-depth", required_argument, nullptr, 'x'},
       {"mill-overlap", required_argument, nullptr, 'o'},
       {"nc-file", required_argument, nullptr, 'n'},
-      {"ps-file", required_argument, nullptr, 'p'},
       {"spindle-speed", required_argument, nullptr, 's'},
+      {"svg-file", required_argument, nullptr, 'g'},
       {"through-elevation", required_argument, nullptr, 't'},
       {"verbose", no_argument, nullptr, 'v'},
       {nullptr, 0, nullptr, 0},
     };
     while ((c = getopt_long(
-                argc, argv, "ac:d:e:f:hl:m:n:o:p:r:s:t:vx:",
+                argc, argv, "ac:d:e:f:g:hl:m:n:o:r:s:t:vx:",
                 long_options, nullptr)) != -1) {
       switch (c) {
       case '?':
@@ -159,6 +159,9 @@ namespace {
       case 'f':
         config.feed_rate = atof(optarg);
         break;
+      case 'g':
+        config.output_svg_path = optarg;
+        break;
       case 'h':
         PrintUsage(stderr, program_name, EXIT_SUCCESS);
         break;
@@ -173,9 +176,6 @@ namespace {
         break;
       case 'o':
         config.mill_overlap = atof(optarg);
-        break;
-      case 'p':
-        config.output_ps_path = optarg;
         break;
       case 'r':
         config.hole_ratio = atof(optarg);
@@ -634,46 +634,65 @@ namespace {
     return QuantaToInches(total);
   }
 
-  void AddOpenPathsToPs(const Path &cut, FILE *fp) {
-    for (const auto &pt : cut) {
-      fprintf(fp, "%f %f %s\n",
-              QuantaToInches(pt.X) * 72,
-              QuantaToInches(pt.Y) * 72,
-              &pt == &cut.front() ? "newpath moveto" : "lineto");
-    }
-    fprintf(fp, "stroke\n");
-  }
-
   struct CutPath {
     double elevation;
     Path path;
     bool slide;
   };
 
-  // TODO: Switch to writing a debug svg.
-  void WriteCutsToPs(const std::string &path,
-                     const std::vector<CutPath> &ordered_cuts) {
+  double QuantaToSvg(cInt x) {
+    return QuantaToInches(x) * kSvgUnitsPerInch;
+  }
+
+  void WriteSvgPath(FILE *fp, const Path &path, const char *color_str,
+                    double diameter,double opacity, cInt height) {
+    fprintf(fp,
+            "  <path style=\"stroke-width:%.5f;stroke:%s;fill:none;"
+            "stroke-linecap:round;stroke-linejoin:round;stroke-opacity:%.3f\" "
+            "d=\"M", diameter * kSvgUnitsPerInch, color_str, opacity);
+    for (const auto &pt : path) {
+      fprintf(fp, " %.5f,%.5f", QuantaToSvg(pt.X), QuantaToSvg(height - pt.Y));
+    }
+    fprintf(fp, "\" />\n");
+  }
+
+  void WriteCutsToSvg(const std::string &path,
+                      const std::vector<CutPath> &ordered_cuts,
+                      const cInt width, const cInt height,
+                      double diameter) {
     FILE *fp = fopen(path.c_str(), "w");
     if (!fp) {
       perror(path.c_str());
       exit(EXIT_FAILURE);
     }
-    fprintf(fp, "0.2 setlinewidth\n");
+
+    const int svg_width = int(QuantaToSvg(width));
+    const int svg_height = int(QuantaToSvg(height));
+    fprintf(fp,
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n"
+            "<svg width=\"%d\" height=\"%d\" version=\"1.1\">\n"
+            "  <rect style=\"fill:white\" width=\"%d\" height=\"%d\" />\n",
+            svg_width, svg_height, svg_width, svg_height);
+
     IntPoint last(0, 0);
     double color = 0;
-    double dc = 1. / (ordered_cuts.size() - 1);
+    double dc = 255. / (ordered_cuts.size() - 1);
     for (const auto &cp : ordered_cuts) {
       // Move
-      Path move{last, cp.path.front()};
-      fprintf(fp, "1 0 0 setrgbcolor\n");
-      AddOpenPathsToPs(move, fp);
+      if (last != cp.path.front()) {
+        Path move{last, cp.path.front()};
+        WriteSvgPath(fp, move, cp.slide ? "yellow" : "red", .01, 1., height);
+      }
       // Cut
-      fprintf(fp, "0 %.3f %.3f setrgbcolor\n", color, 1. - color);
-      color += dc;
-      AddOpenPathsToPs(cp.path, fp);
+      char hex_color[10];
+      sprintf(hex_color, "#00%02X%02X", int(color), 255 - int(color));
+      WriteSvgPath(fp, cp.path, hex_color, diameter, .3, height);
+      WriteSvgPath(fp, cp.path, hex_color, .01, 1., height);
       last = cp.path.back();
+      color += dc;
     }
 
+    fprintf(fp, "</svg>\n");
     fclose(fp);
   }
 
@@ -783,9 +802,9 @@ int main(int argc, char *argv[]) {
     printf("Total cut time excluding moves: %u:%02u\n", minutes, seconds);
   }
 
-  if (!config.output_ps_path.empty()) {
-    // TODO: Replace this with output to .svg so that the drawing size can be correct.
-    WriteCutsToPs(config.output_ps_path, all_ordered_cuts);
+  if (!config.output_svg_path.empty()) {
+    WriteCutsToSvg(config.output_svg_path, all_ordered_cuts,
+                   width, height, config.diameter);
   }
 
   if (!config.output_nc_path.empty()) {

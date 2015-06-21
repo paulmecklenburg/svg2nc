@@ -46,8 +46,6 @@ namespace {
     return true;
   }
 
-  const double kSvgUnitsPerInch = 90;
-
   double SvgToInches(double x) {
     return x / kSvgUnitsPerInch;
   }
