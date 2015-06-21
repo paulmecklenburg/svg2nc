@@ -1,11 +1,9 @@
-// #include <array>
 #include <limits>
 #include <map>
 #include <set>
 #include <string>
 #include <vector>
 
-// #include <ANN/ANN.h>
 #include <getopt.h>
 #include <inttypes.h>
 #include <math.h>
@@ -23,10 +21,10 @@ using ClipperLib::Clipper;
 using ClipperLib::ClipperOffset;
 using ClipperLib::ctIntersection;
 using ClipperLib::etClosedLine;
-// using ClipperLib::etOpenButt;
+using ClipperLib::etOpenButt;
 using ClipperLib::IntPoint;
 using ClipperLib::jtRound;
-// using ClipperLib::jtSquare;
+using ClipperLib::jtSquare;
 using ClipperLib::ptSubject;
 using ClipperLib::ptClip;
 using ClipperLib::Path;
@@ -268,94 +266,6 @@ namespace {
     cuts->insert(cuts->end(), edge_cuts.begin(), edge_cuts.end());
     return true;
   }
-
-  // bool CanSlide(const IntPoint &p0, const IntPoint &p1,
-  //               double radius, const Paths &layers_above) {
-  //   if (layers_above.empty())
-  //     return true;
-
-  //   Paths swept_path;
-  //   {  // Create a swept path for the tool. Ideal would use 'jtRound' with
-  //     // exactly radius. Instead etOpenButt is used. We assume that the start
-  //     // and end are already safe and make the path wider (kEpsilon) to give
-  //     // a bit of extra space. Meatspace is not as precise as math.
-  //     ClipperOffset co;
-  //     const Path line{p0, p1};
-  //     co.AddPath(line, jtSquare /* doesn't actually matter */, etOpenButt);
-  //     const double kEpsilon = 0.005;
-  //     co.Execute(swept_path, InchesToQuanta(radius + kEpsilon));
-  //   }
-
-  //   Clipper c;
-  //   if (!c.AddPaths(layers_above, ptSubject, true) ||
-  //       !c.AddPaths(swept_path, ptClip, true))
-  //     return false;  // TODO: report error.
-
-  //   Paths intersection;
-  //   return c.Execute(ctIntersection, intersection) && intersection.empty();
-  // }
-
-  // void MergeCut(const Path &cut,
-  //               const Paths &layers_above,
-  //               double diameter,
-  //               Paths *all_cuts) {
-  //   if (all_cuts->empty()) {
-  //     all_cuts->push_back(cut);
-  //     return;
-  //   }
-
-  //   std::vector<std::array<ANNcoord, 2>> point_data;
-  //   for (const auto &p : *all_cuts) {
-  //     for (const auto &pt : p) {
-  //       point_data.push_back(std::array<ANNcoord, 2>{
-  //           QuantaToInches(pt.X), QuantaToInches(pt.Y)});
-  //     }
-  //   }
-
-  //   std::vector<ANNpoint> points;
-  //   for (auto &pd : point_data) {
-  //     points.push_back(pd.data());
-  //   }
-
-  //   ANNkd_tree tree(points.data(), points.size(), 2);
-
-  //   ANNidx nearest_idx = 0;
-  //   ANNdist nearest_dist = std::numeric_limits<ANNdist>::max();
-  //   size_t cut_pos = 0;
-  //   for (size_t i = 0; i < cut.size(); ++i) {
-  //     const auto &pt = cut[i];
-  //     std::array<ANNcoord, 2> q{QuantaToInches(pt.X), QuantaToInches(pt.Y)};
-  //     ANNidx idx;
-  //     ANNdist dist;
-  //     tree.annkSearch(q.data(), 1, &idx, &dist);
-  //     if (dist < nearest_dist) {
-  //       nearest_dist = dist;
-  //       nearest_idx = idx;
-  //       cut_pos = i;
-  //     }
-  //   }
-
-  //   Path *dst = nullptr;
-  //   for (auto &p : *all_cuts) {
-  //     if (nearest_idx < ANNidx(p.size())) {
-  //       dst = &p;
-  //       break;
-  //     }
-  //     nearest_idx -= p.size();
-  //   }
-
-  //   const int kMaxSlideDiameters = 2;
-  //   if (sqrt(nearest_dist) <= diameter * kMaxSlideDiameters &&
-  //       CanSlide(cut[cut_pos], (*dst)[nearest_idx], diameter * .5, layers_above)) {
-  //     Path to_insert;
-  //     to_insert.push_back((*dst)[nearest_idx]);
-  //     to_insert.insert(to_insert.end(), cut.begin() + cut_pos, cut.end());
-  //     to_insert.insert(to_insert.end(), cut.begin(), cut.begin() + cut_pos + 1);
-  //     dst->insert(dst->begin() + nearest_idx, to_insert.begin(), to_insert.end());
-  //   } else {
-  //     all_cuts->push_back(cut);
-  //   }
-  // }
 
   bool MillSurface(const Config &,
                    const Paths &,
@@ -675,6 +585,37 @@ namespace {
     }
   }
 
+  bool CanSlide(const Segment &prev, const Segment &seg, double radius) {
+    const auto &start = prev.path.back();
+    const auto &end = seg.path.front();
+    if (start == end)
+      return true;
+    const double kMaxSlideDistance = radius * 4;
+    if (QuantaToInches(sqrt(DistanceSquared(start, end))) > kMaxSlideDistance)
+      return false;
+    const Paths &layers_above = prev.parent->elevation > seg.parent->elevation ?
+      *prev.parent->mask : *seg.parent->mask;
+    if (layers_above.empty())
+      return true;
+    Paths swept_path;
+    {  // Create a swept path for the tool. Ideal would use 'jtRound' with
+      // exactly radius. Instead etOpenButt is used. We assume that the start
+      // and end are already safe and make the path wider (kEpsilon) to give
+      // a bit of extra space. Meatspace is not as precise as math.
+      ClipperOffset co;
+      const Path line{start, end};
+      co.AddPath(line, jtSquare /* doesn't actually matter */, etOpenButt);
+      const double kEpsilon = 0.005;
+      co.Execute(swept_path, InchesToQuanta(radius + kEpsilon));
+    }
+    Clipper c;
+    Paths intersection;
+    OR_DIE(c.AddPaths(layers_above, ptSubject, true) &&
+           c.AddPaths(swept_path, ptClip, true) &&
+           c.Execute(ctIntersection, intersection));
+    return intersection.empty();
+  }
+
   std::vector<double> PassElevations(const Config &config, double elevation) {
     const double delta = config.material_thickness - elevation;
     const int passes = ceil(delta / config.max_pass_depth);
@@ -706,6 +647,7 @@ namespace {
   struct CutPath {
     double elevation;
     Path path;
+    bool slide;
   };
 
   // TODO: Switch to writing a debug svg.
@@ -761,10 +703,12 @@ namespace {
     const double safe_elevation =
       config.material_thickness + config.clearance_space;
     IntPoint last{0, 0};
+    double last_elevation = 0;
     for (const auto &cp : ordered_cuts) {
       const auto &first = cp.path.front();
       if (first != last) {
-        fprintf(fp, "G0 Z%f\n", safe_elevation);
+        fprintf(fp, "G0 Z%f\n", cp.slide ?
+                std::max(last_elevation, cp.elevation) + .02 : safe_elevation);
         fprintf(fp, " X%f Y%f\n",
                 QuantaToInches(first.X),
                 QuantaToInches(first.Y));
@@ -775,6 +719,7 @@ namespace {
         fprintf(fp, " X%f Y%f\n", QuantaToInches(cur.X), QuantaToInches(cur.Y));
       }
       last = cp.path.back();
+      last_elevation = cp.elevation;
     }
 
     fprintf(fp,
@@ -813,14 +758,17 @@ int main(int argc, char *argv[]) {
   ComputeOrdering(cut_loops, &segments);
 
   std::vector<CutPath> all_ordered_cuts;
+  const Segment *prev = nullptr;
   for (const Segment *seg : segments) {
     CutPath cp;
     cp.path = seg->path;
-    // TODO: Add support for slides.
+    cp.slide = prev && CanSlide(*prev, *seg, config.diameter / 2);
     for (const double elevation : PassElevations(config, seg->parent->elevation)) {
       cp.elevation = elevation;
       all_ordered_cuts.push_back(cp);
+      cp.slide = true;
     }
+    prev = seg;
   }
 
   if (config.verbose) {
