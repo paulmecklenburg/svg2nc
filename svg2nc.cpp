@@ -645,11 +645,12 @@ namespace {
   }
 
   void WriteSvgPath(FILE *fp, const Path &path, const char *color_str,
-                    double diameter,double opacity, cInt height) {
+                    double diameter, double opacity, bool arrow, cInt height) {
     fprintf(fp,
             "  <path style=\"stroke-width:%.5f;stroke:%s;fill:none;"
             "stroke-linecap:round;stroke-linejoin:round;stroke-opacity:%.3f\" "
-            "d=\"M", diameter * kSvgUnitsPerInch, color_str, opacity);
+            "%sd=\"M", diameter * kSvgUnitsPerInch, color_str, opacity,
+            arrow ? "marker-end=\"url(#Triangle)\" " : "");
     for (const auto &pt : path) {
       fprintf(fp, " %.5f,%.5f", QuantaToSvg(pt.X), QuantaToSvg(height - pt.Y));
     }
@@ -671,7 +672,16 @@ namespace {
     fprintf(fp,
             "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n"
             "<svg width=\"%d\" height=\"%d\" version=\"1.1\">\n"
-            "  <rect style=\"fill:white\" width=\"%d\" height=\"%d\" />\n",
+            "  <rect style=\"fill:white\" width=\"%d\" height=\"%d\" />\n"
+            "  <defs>\n"
+            "    <marker id=\"Triangle\"\n"
+            "      viewBox=\"0 0 6 6\" refX=\"6\" refY=\"3\"\n"
+            "      markerUnits=\"strokeWidth\"\n"
+            "      markerWidth=\"4\" markerHeight=\"3\"\n"
+            "      orient=\"auto\">\n"
+            "      <path d=\"M 0,0 6,3 0,6 z\" />\n"
+            "    </marker>\n"
+            "  </defs>\n",
             svg_width, svg_height, svg_width, svg_height);
 
     IntPoint last(0, 0);
@@ -681,13 +691,13 @@ namespace {
       // Move
       if (last != cp.path.front()) {
         Path move{last, cp.path.front()};
-        WriteSvgPath(fp, move, cp.slide ? "yellow" : "red", .01, 1., height);
+        WriteSvgPath(fp, move, cp.slide ? "yellow" : "red", .01, 1., true, height);
       }
       // Cut
       char hex_color[10];
       sprintf(hex_color, "#00%02X%02X", int(color), 255 - int(color));
-      WriteSvgPath(fp, cp.path, hex_color, diameter, .3, height);
-      WriteSvgPath(fp, cp.path, hex_color, .01, 1., height);
+      WriteSvgPath(fp, cp.path, hex_color, diameter, .3, false, height);
+      WriteSvgPath(fp, cp.path, hex_color, .01, 1., false, height);
       last = cp.path.back();
       color += dc;
     }
