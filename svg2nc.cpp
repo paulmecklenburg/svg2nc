@@ -736,7 +736,7 @@ namespace {
     for (const auto &cp : ordered_cuts) {
       const auto &first = cp.path.front();
       if (first != last) {
-        fprintf(fp, "G0 Z%f\n", cp.slide ?
+        fprintf(fp, "G%s Z%f\n", cp.slide ? "1" : "0" , cp.slide ?
                 std::max(last_elevation, cp.elevation) + .02 : safe_elevation);
         fprintf(fp, " X%f Y%f\n",
                 QuantaToInches(first.X),
