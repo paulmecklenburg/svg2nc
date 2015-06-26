@@ -32,9 +32,9 @@ If no material thickness is specified, svg assumes the material is as thick as t
 
 ## Known Issues and Limitations
 
-svg2nc relies on libsvgtiny to handle svg input. Many paths and basic shapes are supported. Clones are ignored. Layers that are marked hidden are not actually ignored.
+svg2nc relies on libsvgtiny to handle svg input. Many paths and basic shapes are supported. Notably absent is the svg arc command. Clones are ignored. Layers that are marked hidden are not actually ignored.
 
-Parts place within holes of other parts are cut first.
+Parts placed within holes of other parts are cut first.
 
 svg2nc does not support color gradients. The elevation of each path must be uniform.
 
