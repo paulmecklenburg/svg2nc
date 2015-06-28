@@ -12,6 +12,7 @@ bool SvgToPolygons(const char *file_name,
                    const std::map<uint32_t, double> &color_to_elevation,
                    const bool as_drawn,
                    std::map<double, ClipperLib::Paths> *layers,
+                   std::vector<ClipperLib::IntPoint> *delay_points,
                    ClipperLib::cInt *width,
                    ClipperLib::cInt *height) MUST_USE_RESULT;
 

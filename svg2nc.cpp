@@ -43,7 +43,6 @@ namespace {
     double max_pass_depth = .25;
     double spindle_speed = 1000.;
     double through_elevation = 0;
-    double hole_ratio = 4;
     bool verbose = false;
     std::string svg_path;
     std::string output_svg_path;
@@ -70,8 +69,6 @@ namespace {
         "  -n --nc-file=<path>        Write the cut plan to a .nc file.\n"
         "  -o --mill-overlap=<fraction>\n"
         "     Fraction of a cut to overlap with adjacent cuts.\n"
-        "  -r --hole-ratio=<ratio>    Bit area coefficient to define hole \n"
-        "     threshold. Negative value disables.\n"
         "  -s --spindle_speed=<rpm>   Set the spindle speed.\n"
         "  -t --through-elevatation=<inches>\n"
         "     The elevation to use while cutting holes and outlines.\n"
@@ -126,7 +123,6 @@ namespace {
       {"feed-rate", required_argument, nullptr, 'f'},
       {"help", no_argument, nullptr, 'h'},
       {"hole-color", required_argument, nullptr, 'e'},
-      {"hole-ratio", required_argument, nullptr, 'r'},
       {"material-thickness", required_argument, nullptr, 'm'},
       {"max-pass-depth", required_argument, nullptr, 'x'},
       {"mill-overlap", required_argument, nullptr, 'o'},
@@ -176,9 +172,6 @@ namespace {
         break;
       case 'o':
         config.mill_overlap = atof(optarg);
-        break;
-      case 'r':
-        config.hole_ratio = atof(optarg);
         break;
       case 's':
         config.spindle_speed = atof(optarg);
@@ -385,8 +378,25 @@ namespace {
     (*roots)[cl] = tmp;
   }
 
-  std::vector<CutLoop*> ComputeBlocks(std::vector<CutLoop*> *cut_loops,
-                                      const double hole_area) {
+  bool IsDelayed(const Path &path,
+                 const double radius,
+                 const std::vector<IntPoint> &delay_points) {
+    const Paths paths{path};
+    Paths approx_orig;
+    OR_DIE(ComputeOffset(paths, radius, &approx_orig));
+    OR_DIE(approx_orig.size() == 1);
+    for (const auto &pt : delay_points) {
+      if (PointInPolygon(pt, approx_orig[0])) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  std::vector<CutLoop*> ComputeBlocks(
+      std::vector<CutLoop*> *cut_loops,
+      const double radius,
+      const std::vector<IntPoint> &delay_points) {
     // Generate a map of disjoint cuts and a list of cuts inside each.
     std::map<CutLoop*, std::vector<CutLoop*> > roots;
     for (CutLoop *cl : *cut_loops) {
@@ -395,21 +405,19 @@ namespace {
     // Recursively find the disjoint cuts within each child. Update children
     // to block their parents.
     for (auto &iter : roots) {
-      for (auto &grand_child : ComputeBlocks(&iter.second, hole_area)) {
+      for (auto &grand_child
+             : ComputeBlocks(&iter.second, radius, delay_points)) {
         grand_child->blocks.push_back(iter.first);
       }
     }
-    // Find large hole cuts. Have all other cuts block them. This way the other
-    // cuts are performed first.
-    std::vector<CutLoop*> holes;
-    std::vector<CutLoop*> nonholes;
+    std::vector<CutLoop*> delayed;
+    std::vector<CutLoop*> nondelayed;
     for (auto &iter : roots) {
-      const bool is_hole = iter.second.empty() && iter.first->elevation <= 0. &&
-        fabs(Area(iter.first->path)) >= hole_area;
-      (is_hole ? holes : nonholes).push_back(iter.first);
+      (iter.second.empty() && IsDelayed(iter.first->path, radius, delay_points)
+       ? delayed : nondelayed).push_back(iter.first);
     }
-    for (auto nh : nonholes) {
-      nh->blocks.insert(nh->blocks.end(), holes.begin(), holes.end());
+    for (auto nd : nondelayed) {
+      nd->blocks.insert(nd->blocks.end(), delayed.begin(), delayed.end());
     }
     // Return a list of the children.
     std::vector<CutLoop*> children;
@@ -764,9 +772,11 @@ int main(int argc, char *argv[]) {
   const Config config = ParseArgs(argc, argv);
 
   std::map<double, Paths> layers;
+  std::vector<IntPoint> delay_points;
   cInt width, height;
   if (!SvgToPolygons(config.svg_path.c_str(), config.color_to_elevation,
-                     config.as_drawn, &layers, &width, &height)) {
+                     config.as_drawn, &layers, &delay_points,
+                     &width, &height)) {
     return EXIT_FAILURE;
   }
 
@@ -777,10 +787,7 @@ int main(int argc, char *argv[]) {
   for (CutLoop &cl : cut_loops_storage)
     cut_loops.push_back(&cl);
 
-  {
-    const double bit_area = M_PI * config.diameter * config.diameter / 4;
-    ComputeBlocks(&cut_loops, config.hole_ratio * bit_area);
-  }
+  ComputeBlocks(&cut_loops, config.diameter / 2, delay_points);
   ComputeSegments(width, height, &cut_loops);
 
   std::vector<const Segment*> segments;

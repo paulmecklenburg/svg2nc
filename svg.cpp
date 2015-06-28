@@ -192,6 +192,7 @@ bool SvgToPolygons(const char *file_name,
                    const std::map<uint32_t, double> &color_to_elevation,
                    const bool as_drawn,
                    std::map<double, Paths> *layers,
+                   std::vector<IntPoint> *delay_points,
                    cInt *width, cInt *height) {
   std::unique_ptr<struct svgtiny_diagram, decltype(&svgtiny_free)> diagram(
       LoadSvg(file_name), svgtiny_free);
@@ -204,6 +205,13 @@ bool SvgToPolygons(const char *file_name,
 
   for (unsigned i = 0; i < diagram->shape_count; i++) {
     const auto &shape = diagram->shape[i];
+    if (shape.text) {
+      if (!strcmp(shape.text, ":delay:")) {
+        delay_points->push_back(
+            IntPoint(SvgToQuanta(shape.text_x),
+                     SvgToQuanta(diagram->height - shape.text_y)));
+      }
+    }
     if (shape.path) {
       Paths paths;
       if (!ConvertPath(shape.path, shape.path_length, diagram->height, &paths)) {
