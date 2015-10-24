@@ -504,6 +504,29 @@ namespace {
     }
   }
 
+  void CollapseBlocks(const CutLoop *cl, std::vector<CutLoop*> *new_blocks) {
+    for (const auto target : cl->blocks) {
+      if (target->segments.empty()) {
+        CollapseBlocks(target, new_blocks);
+      } else {
+        new_blocks->push_back(target);
+      }
+    }
+  }
+
+  void DropEmptyCuts(std::vector<CutLoop*> *cut_loops) {
+    std::vector<CutLoop*> tmp;
+    for (const auto cl : *cut_loops) {
+      if (!cl->segments.empty()) {
+        std::vector<CutLoop*> new_blocks;
+        CollapseBlocks(cl, &new_blocks);
+        cl->blocks.swap(new_blocks);
+        tmp.push_back(cl);
+      }
+    }
+    cut_loops->swap(tmp);
+  }
+
   cInt DistanceSquared(const IntPoint &a, const IntPoint &b) {
     const cInt dx = a.X - b.X;
     const cInt dy = a.Y - b.Y;
@@ -789,6 +812,7 @@ int main(int argc, char *argv[]) {
 
   ComputeBlocks(&cut_loops, config.diameter / 2, delay_points);
   ComputeSegments(width, height, &cut_loops);
+  DropEmptyCuts(&cut_loops);
 
   std::vector<const Segment*> segments;
   ComputeOrdering(cut_loops, &segments);
