@@ -35,6 +35,7 @@ namespace {
   struct Config {
     bool as_drawn = false;
     std::map<uint32_t, double> color_to_elevation;
+    std::set<uint32_t> ignore_colors;
     double clearance_space = .25;
     double diameter = -1.;
     double feed_rate = 12.;
@@ -57,11 +58,12 @@ namespace {
         "  -a --as-drawn              Allow holes and pockets to be drawn on.\n"
         "  -c --color-elevation=<hex color>:<inches>\n"
         "     Specify the elevation for a color.\n"
+        "  -d --diameter=<inches>     Set the tool DIAMETER.\n"
         "  -e --hole-color=<hex color> Color for drawn-on through holes.\n"
         "  -f --feed-rate=<inches per minute>\n"
         "     Specify the feed rate.\n"
         "  -g --svg-file=<path>        Write the cut plan to a .svg file.\n"
-        "  -d --diameter=<inches>     Set the tool DIAMETER.\n"
+        "  -i --ignore-color=<hex color> Ignore this color.\n"
         "  -l --clearance-space=<inches>\n"
         "     Safety space to use above the part while moving.\n"
         "  -m --material-thickness=<inches>\n"
@@ -123,6 +125,7 @@ namespace {
       {"feed-rate", required_argument, nullptr, 'f'},
       {"help", no_argument, nullptr, 'h'},
       {"hole-color", required_argument, nullptr, 'e'},
+      {"ignore-color", required_argument, nullptr, 'i'},
       {"material-thickness", required_argument, nullptr, 'm'},
       {"max-pass-depth", required_argument, nullptr, 'x'},
       {"mill-overlap", required_argument, nullptr, 'o'},
@@ -134,7 +137,7 @@ namespace {
       {nullptr, 0, nullptr, 0},
     };
     while ((c = getopt_long(
-                argc, argv, "ac:d:e:f:g:hl:m:n:o:r:s:t:vx:",
+                argc, argv, "ac:d:e:f:g:hi:l:m:n:o:r:s:t:vx:",
                 long_options, nullptr)) != -1) {
       switch (c) {
       case '?':
@@ -160,6 +163,9 @@ namespace {
         break;
       case 'h':
         PrintUsage(stderr, program_name, EXIT_SUCCESS);
+        break;
+      case 'i':
+        config.ignore_colors.insert(ParseColor(optarg));
         break;
       case 'l':
         config.clearance_space = atof(optarg);
@@ -797,7 +803,8 @@ int main(int argc, char *argv[]) {
   std::map<double, Paths> layers;
   std::vector<IntPoint> delay_points;
   cInt width, height;
-  if (!SvgToPolygons(config.svg_path.c_str(), config.color_to_elevation,
+  if (!SvgToPolygons(config.svg_path.c_str(),
+                     config.color_to_elevation, config.ignore_colors,
                      config.as_drawn, &layers, &delay_points,
                      &width, &height)) {
     return EXIT_FAILURE;

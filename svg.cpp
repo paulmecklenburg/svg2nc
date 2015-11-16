@@ -190,6 +190,7 @@ namespace {
 
 bool SvgToPolygons(const char *file_name,
                    const std::map<uint32_t, double> &color_to_elevation,
+                   const std::set<uint32_t> &ignore_colors,
                    const bool as_drawn,
                    std::map<double, Paths> *layers,
                    std::vector<IntPoint> *delay_points,
@@ -224,6 +225,9 @@ bool SvgToPolygons(const char *file_name,
                 "libtinysvg. For example, arc commands are converted to a "
                 "single line segment.\n");
         return false;
+      }
+      if (ignore_colors.count(shape.fill)) {
+        continue;
       }
       const auto elevation_itr = color_to_elevation.find(shape.fill);
       if (elevation_itr == color_to_elevation.end()) {
