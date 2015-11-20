@@ -44,6 +44,7 @@ namespace {
     double max_pass_depth = .25;
     double spindle_speed = 1000.;
     double through_elevation = 0;
+    double blend_tolerance = 0;
     bool verbose = false;
     std::string svg_path;
     std::string output_svg_path;
@@ -56,6 +57,7 @@ namespace {
         stream,
         "  -h  --help                 Display this usage information.\n"
         "  -a --as-drawn              Allow holes and pockets to be drawn on.\n"
+        "  -b --blend-tolerance=<inches> Allow paths to deviate.\n"
         "  -c --color-elevation=<hex color>:<inches>\n"
         "     Specify the elevation for a color.\n"
         "  -d --diameter=<inches>     Set the tool DIAMETER.\n"
@@ -119,6 +121,7 @@ namespace {
     std::string hole_color;
     static const struct option long_options[] = {
       {"as-drawn", no_argument, nullptr, 'a'},
+      {"blend-tolerance", required_argument, nullptr, 'b'},
       {"clearance-space", required_argument, nullptr, 'l'},
       {"color-elevation", required_argument, nullptr, 'c'},
       {"diameter", required_argument, nullptr, 'd'},
@@ -137,7 +140,7 @@ namespace {
       {nullptr, 0, nullptr, 0},
     };
     while ((c = getopt_long(
-                argc, argv, "ac:d:e:f:g:hi:l:m:n:o:r:s:t:vx:",
+                argc, argv, "ab:c:d:e:f:g:hi:l:m:n:o:r:s:t:vx:",
                 long_options, nullptr)) != -1) {
       switch (c) {
       case '?':
@@ -145,6 +148,9 @@ namespace {
         break;
       case 'a':
         config.as_drawn = true;
+        break;
+      case 'b':
+        config.blend_tolerance = atof(optarg);
         break;
       case 'c':
         ParseColorElevationPair(optarg, &config.color_to_elevation);
@@ -758,13 +764,19 @@ namespace {
             "G80 (cancel modal motion)\n"
             "G54 (select coordinate system 1)\n"
             "G90 (disable incremental moves)\n"
-            "G20 (imperial)\n"
-            "G61 (exact path mode)\n"
+            "G20 (imperial)\n", config.svg_path.c_str());
+    if (config.blend_tolerance > 0.) {
+      fprintf(fp, "G64 P%f (blend path mode)\n",
+              config.blend_tolerance);
+    } else {
+      fprintf(fp, "G61 (exact path mode)\n");
+    }
+    fprintf(fp,
             "F%.3f (feed rate)\n"
             "S%.1f (spindle speed)\n"
             "M3 (start spindle)\n"
             "G04 p1 (wait for 1 second)\n",
-            config.svg_path.c_str(), config.feed_rate, config.spindle_speed);
+            config.feed_rate, config.spindle_speed);
 
     const double safe_elevation =
       config.material_thickness + config.clearance_space;
