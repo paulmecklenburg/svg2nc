@@ -441,36 +441,14 @@ namespace {
     return children;
   }
 
-  bool OnOrInside(const Path &, const Path &) MUST_USE_RESULT;
-  bool OnOrInside(const Path &inner, const Path &outer) {
-    for (const auto &pt : inner) {
-      // PointInPolygon uses doubles internally and as a result occasionally
-      // lies about the status of a point.
-      if (PointInPolygon(pt, outer) == 0)
-        return false;
-    }
-    return true;
-  }
-
   bool TrimCutToBoundingBox(cInt, cInt, const Path &in, Paths *out) MUST_USE_RESULT;
   bool TrimCutToBoundingBox(cInt width, cInt height, const Path &in, Paths *out) {
     out->clear();
     const Path bbox{{0, 0}, {width, 0}, {width, height}, {0, height}};
-    // This test is done to work around a clipper bug where segments are
-    // dropped from open paths with the final point the same as the starting
-    // point in the *output*. This only happens with paths that aren't clipped
-    // at all.
-    // TODO: Try removing this hack. The newest versions don't seem to have the
-    // bug anymore.
-    if (OnOrInside(in, bbox)) {
-      out->push_back(in);
-      return true;
-    }
     Clipper c;
-    if (!c.AddPath(in, ptSubject, false))
-      return false;
     PolyTree solution;
-    if (!c.AddPath(bbox, ptClip, true) ||
+    if (!c.AddPath(in, ptSubject, false) ||
+        !c.AddPath(bbox, ptClip, true) ||
         !c.Execute(ctIntersection, solution))
       return false;
     OpenPathsFromPolyTree(solution, *out);
