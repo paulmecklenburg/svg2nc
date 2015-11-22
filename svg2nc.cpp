@@ -1,5 +1,7 @@
+#include <algorithm>
 #include <limits>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -13,12 +15,12 @@
 #include "common.h"
 #include "path_util.h"
 #include "svg.h"
-#include "uniq_seg.h"
 
 using ClipperLib::Area;
 using ClipperLib::cInt;
 using ClipperLib::Clipper;
 using ClipperLib::ClipperOffset;
+using ClipperLib::ctDifference;
 using ClipperLib::ctIntersection;
 using ClipperLib::etClosedLine;
 using ClipperLib::etOpenButt;
@@ -458,6 +460,8 @@ namespace {
     // dropped from open paths with the final point the same as the starting
     // point in the *output*. This only happens with paths that aren't clipped
     // at all.
+    // TODO: Try removing this hack. The newest versions don't seem to have the
+    // bug anymore.
     if (OnOrInside(in, bbox)) {
       out->push_back(in);
       return true;
@@ -479,33 +483,22 @@ namespace {
     };
     std::sort(cut_loops->begin(), cut_loops->end(), ElevationLess);
 
-    UniqSeg uniq_seg;
+    Paths mask;
     for (CutLoop *cl : *cut_loops) {
-      const Path &path = cl->path;
+      Path path = cl->path;
+      path.push_back(path.front());  // Make open.
       Paths segments;
-      for (size_t i = 0; i < path.size(); ++i) {
-        Paths tmp;
-        uniq_seg.RemoveRedundant(path[i], path[(i + 1) % path.size()], &tmp);
-        for (const Path &p : tmp) {
-          // TODO: encode this in the data type.
-          OR_DIE(p.size() == 2);
-          if (!segments.empty() && segments.back().back() == p.front()) {
-            segments.back().push_back(p.back());
-          } else {
-            segments.push_back(p);
-          }
-        }
+      if (mask.empty()) {
+        segments.push_back(path);
+      } else {
+        Clipper c;
+        PolyTree solution;
+        OR_DIE(c.AddPath(path, ptSubject, false) &&
+               c.AddPaths(mask, ptClip, true) &&
+               c.Execute(ctDifference, solution));
+        OpenPathsFromPolyTree(solution, segments);
       }
-      if (segments.size() > 1 &&
-          segments.front().front() == segments.back().back()) {
-        // The end of the last segment connects back to the beginning of the
-        // first segment. Merge them.
-        segments.back().insert(segments.back().end(),
-                               segments.front().begin() + 1,
-                               segments.front().end());
-        segments.front().swap(segments.back());
-        segments.pop_back();
-      }
+      // TODO: Initialize the mask with the bounding box and remove this logic.
       for (const auto &segment : segments) {
         Paths tmp;
         OR_DIE(TrimCutToBoundingBox(width, height, segment, &tmp));
@@ -513,6 +506,10 @@ namespace {
           cl->segments.push_back(Segment{cl, p});
         }
       }
+      const double kEpison = 0.0001;
+      Paths path_mask;
+      CutToPolygon(segments, kEpison, &path_mask);
+      OR_DIE(UnionInto(path_mask, &mask));
     }
   }
 

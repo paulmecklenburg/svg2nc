@@ -42,16 +42,29 @@ svg2nc does not support color gradients. The elevation of each path must be unif
 ## Building svg2nc
 
 svg2nc depends on
-* Clipper (libpolyclipping-dev on debian).
+* Clipper
 * Boost (libboost-dev on debian)
 * libsvgtiny
 
 The following instructions assume a debian-based system and were tested on Ubuntu 14.04.
 
-### git, g++, Clipper, Boost, Expat, and gperf
-Clipper, and Boost are used directly by svg2nc. Expat and gperf are requried by libsvgtiny.
+### CMake, git, g++, Boost, Expat, and gperf
+Boost is used directly by svg2nc. Expat and gperf are requried by libsvgtiny. CMake is required to build clipper.
 <pre>
-$ sudo apt-get install --assume-yes libpolyclipping-dev libboost-dev libexpat1-dev gperf git g++
+$ sudo apt-get install --assume-yes libboost-dev libexpat1-dev gperf git g++ cmake
+</pre>
+
+### Clipper
+Clipper is available as a Debian package, but as of November 2015, it is version v6.1.3a which has bugs that make svg2nc unusable. Instead download the [latest version](http://www.angusj.com/delphi/clipper.php).
+<pre>
+$ makedir clipper_ver6.2.1; cd clipper_ver6.2.1
+$ unzip ../clipper_ver6.2.1.zip
+$ cd cpp
+$ cmake .
+# Open clipper.hpp in an editor and uncomment the line "#define use_lines".
+$ make
+$ sudo make install
+$ sudo ldconfig
 </pre>
 
 ### libsvgtiny
