@@ -455,6 +455,56 @@ namespace {
     return true;    
   }
 
+  cInt Dot(const IntPoint &a, const IntPoint &b) {
+    return a.X * b.X + a.Y * b.Y;
+  }
+
+  double SegmentPointAlpha(const IntPoint &u, const IntPoint &v, const IntPoint &a) {
+    const IntPoint vu(v.X - u.X, v.Y - u.Y);
+    const IntPoint au(a.X - u.X, a.Y - u.Y);
+    const double l2 = Dot(vu, vu);
+    return Dot(au, vu) / l2;
+  }
+
+  cInt DistanceSquared(const IntPoint &a, const IntPoint &b) {
+    const cInt dx = a.X - b.X;
+    const cInt dy = a.Y - b.Y;
+    return dx*dx + dy*dy;
+  }
+
+  cInt SegmentPointDistanceSquared(const IntPoint &u, const IntPoint &v,
+                                   double alpha, const IntPoint &a) {
+    if (alpha < 0.)
+      return DistanceSquared(u, a);
+    if (alpha > 1.)
+      return DistanceSquared(v, a);
+
+    const IntPoint vu(v.X - u.X, v.Y - u.Y);
+    const IntPoint p(u.X + alpha * vu.X, u.Y + alpha * vu.Y);
+    return DistanceSquared(p, a);
+  }
+
+  bool ReverseOrientation(const Path &path,
+                          const IntPoint &a, const IntPoint &b) {
+    cInt min_d2 = std::numeric_limits<cInt>::max();
+    bool reverse = false;
+    for (size_t i = 0; i < path.size(); ++i) {
+      const IntPoint &u = path[i];
+      const IntPoint &v = path[(i + 1) % path.size()];
+      if (u == v)
+        continue;
+      const double alpha_a = SegmentPointAlpha(u, v, a);
+      const double alpha_b = SegmentPointAlpha(u, v, b);
+      const cInt d2 = SegmentPointDistanceSquared(u, v, alpha_a, a)
+        + SegmentPointDistanceSquared(u, v, alpha_b, b);
+      if (d2 < min_d2) {
+        min_d2 = d2;
+        reverse = alpha_a > alpha_b;
+      }
+    }
+    return reverse;
+  }
+
   void ComputeSegments(cInt width, cInt height, std::vector<CutLoop*> *cut_loops) {
     const auto ElevationLess = [](const CutLoop *a, const CutLoop *b) -> bool {
       return a->elevation < b->elevation;
@@ -480,7 +530,10 @@ namespace {
       for (const auto &segment : segments) {
         Paths tmp;
         OR_DIE(TrimCutToBoundingBox(width, height, segment, &tmp));
-        for (const Path &p : tmp) {
+        for (Path p : tmp) {
+          if (ReverseOrientation(cl->path, p[0], p[1])) {
+            std::reverse(p.begin(), p.end());
+          }
           cl->segments.push_back(Segment{cl, p});
         }
       }
@@ -512,12 +565,6 @@ namespace {
       }
     }
     cut_loops->swap(tmp);
-  }
-
-  cInt DistanceSquared(const IntPoint &a, const IntPoint &b) {
-    const cInt dx = a.X - b.X;
-    const cInt dy = a.Y - b.Y;
-    return dx*dx + dy*dy;
   }
 
   cInt ClosestPointInPath(
