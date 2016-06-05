@@ -76,7 +76,7 @@ namespace {
         "  -o --mill-overlap=<fraction>\n"
         "     Fraction of a cut to overlap with adjacent cuts.\n"
         "  -s --spindle_speed=<rpm>   Set the spindle speed.\n"
-        "  -t --through-elevatation=<inches>\n"
+        "  -t --through-elevation=<inches>\n"
         "     The elevation to use while cutting holes and outlines.\n"
         "  -v --verbose               Enable verbose output.\n"
         "  -x --max-pass-depth=<depth>\n"
