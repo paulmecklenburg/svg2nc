@@ -395,9 +395,12 @@ namespace {
   bool IsDelayed(const Path &path,
                  const double radius,
                  const std::vector<IntPoint> &delay_points) {
+    if (delay_points.empty())
+      return false;
     const Paths paths{path};
     Paths approx_orig;
     OR_DIE(ComputeOffset(paths, radius, &approx_orig));
+    // TODO: Some shapes produce more than one.
     OR_DIE(approx_orig.size() == 1);
     for (const auto &pt : delay_points) {
       if (PointInPolygon(pt, approx_orig[0])) {
