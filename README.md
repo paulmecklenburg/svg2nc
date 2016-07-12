@@ -32,7 +32,7 @@ If no material thickness is specified, svg assumes the material is as thick as t
 
 ## Known Issues and Limitations
 
-svg2nc relies on libsvgtiny to handle svg input. Many paths and basic shapes are supported. Notably absent is the svg arc command. Clones are ignored. Layers that are marked hidden are not actually ignored.
+svg2nc relies on nanosvg to handle svg input.
 
 Parts placed within holes of other parts are cut first.
 
@@ -44,14 +44,13 @@ svg2nc does not support color gradients. The elevation of each path must be unif
 svg2nc depends on
 * Clipper
 * Boost (libboost-dev on debian)
-* libsvgtiny
 
 The following instructions assume a debian-based system and were tested on Ubuntu 14.04.
 
-### CMake, git, g++, Boost, Expat, and gperf
-Boost is used directly by svg2nc. Expat and gperf are requried by libsvgtiny. CMake is required to build clipper.
+### CMake, git, g++, and Boost
+Boost is used directly by svg2nc. CMake is required to build clipper.
 <pre>
-$ sudo apt-get install --assume-yes libboost-dev libexpat1-dev gperf git g++ cmake
+$ sudo apt-get install --assume-yes libboost-dev git g++ cmake
 </pre>
 
 ### Clipper
@@ -67,31 +66,8 @@ $ sudo make install
 $ sudo ldconfig
 </pre>
 
-### libsvgtiny
-<pre>
-$ mkdir tmp; cd tmp
-
-$ git clone git://git.netsurf-browser.org/buildsystem
-$ cd buildsystem && sudo make install && cd ..
-
-$ git clone git://git.netsurf-browser.org/libwapcaplet
-$ cd libwapcaplet && make && sudo make install && cd ..
-
-$ git clone git://git.netsurf-browser.org/libparserutils
-$ cd libparserutils && make && sudo make install && cd ..
-
-$ git clone git://git.netsurf-browser.org/libhubbub.git
-$ cd libhubbub && make && sudo make install && cd ..
-
-$ git clone git://git.netsurf-browser.org/libdom
-$ cd libdom && make && sudo make install && cd ..
-
-$ git clone git://git.netsurf-browser.org/libsvgtiny.git
-$ cd libsvgtiny && make && sudo make install && cd ..
-</pre>
-
-### svg2nc
+### svg2nc and nanosvg
 <pre>
 $ git clone https://github.com/paulmecklenburg/svg2nc.git
-$ cd svg2nc && make
+$ cd svg2nc && wget https://raw.githubusercontent.com/memononen/nanosvg/master/src/nanosvg.h && make
 </pre>

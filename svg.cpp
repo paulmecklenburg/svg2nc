@@ -9,9 +9,11 @@
 
 #include "common.h"
 #include "path_util.h"
-extern "C" {
-#include "svgtiny.h"
-}  // extern "C"
+
+#include <string.h>
+#include <math.h>
+#define NANOSVG_IMPLEMENTATION  // Expands implementation
+#include "nanosvg.h"
 
 using ClipperLib::IntPoint;
 using ClipperLib::Path;
@@ -19,33 +21,6 @@ using ClipperLib::Paths;
 using ClipperLib::cInt;
 
 namespace {
-
-  bool ReadFileToString(const char *, std::string *) MUST_USE_RESULT;
-  bool ReadFileToString(const char *path, std::string *result) {
-    struct stat sb;
-    if (stat(path, &sb)) {
-      perror(path);
-      return false;
-    }
-
-    FILE *fd = fopen(path, "rb");
-    if (!fd) {
-      perror(path);
-      return false;
-    }
-
-    result->reserve(sb.st_size);
-    result->resize(sb.st_size);
-    const size_t n = fread(&((*result)[0]), 1, sb.st_size, fd);
-    if (n != (size_t)sb.st_size) {
-      perror(path);
-      return false;
-    }
-
-    fclose(fd);
-    return true;
-  }
-
   double SvgToInches(double x) {
     return x / kSvgUnitsPerInch;
   }
@@ -91,55 +66,27 @@ namespace {
     }
   }
 
-  bool ConvertPath(const float *, unsigned int, double, Paths *) MUST_USE_RESULT;
-  bool ConvertPath(const float *input, unsigned int length, double svg_height, Paths *output) {
-    // svg_height is used to invert the y axis.
-    Path *path = nullptr;
-    unsigned int j;
-    for (j = 0; j < length; ) {
-      switch ((int) input[j]) {
-      case svgtiny_PATH_MOVE:
-        if (path)
-          return false;
-        output->push_back(Path());
-        path = &output->back();
-      case svgtiny_PATH_LINE:
-        if (!path || (j + 3) > length)
-          return false;
-        path->push_back(IntPoint(SvgToQuanta(input[j+1]),
-                                 SvgToQuanta(svg_height - input[j+2])));
-        j += 3;
-        break;
-      case svgtiny_PATH_CLOSE:
-        if (!path || (j + 1) > length)
-          return false;
-        if (path->front() == path->back())
-          path->pop_back();  // Sometimes the final point is duplicated.
-        path = nullptr;
-        j += 1;
-        break;
-      case svgtiny_PATH_BEZIER:
-        {
-          if (!path || path->empty() || (j + 7) > length)
-            return false;
-          const double x0 = QuantaToInches(path->back().X);
-          const double y0 = QuantaToInches(path->back().Y);
-          AddBezierPointsToPath(x0, y0,
-                                SvgToInches(input[j+1]),
-                                SvgToInches(svg_height - input[j+2]),
-                                SvgToInches(input[j+3]),
-                                SvgToInches(svg_height - input[j+4]),
-                                SvgToInches(input[j+5]),
-                                SvgToInches(svg_height - input[j+6]),
-                                0., 1., path);
-          j += 7;
-          break;
-        }
-      default:
-        return false;
+  void ConvertPath(const NSVGpath *input, double svg_height, Paths *output) {
+    for (; input; input = input->next) {
+      if (!input->closed) {
+        fprintf(stderr, "warning: skipping open input path.\n");
+        continue;
+      }
+      output->push_back(Path());
+      Path *path = &output->back();
+      for (int i = 0; i < input->npts-1; i += 3) {
+        const float* p = &input->pts[i*2];
+        AddBezierPointsToPath(SvgToInches(p[0]),
+                              SvgToInches(svg_height - p[1]),
+                              SvgToInches(p[2]),
+                              SvgToInches(svg_height - p[3]),
+                              SvgToInches(p[4]),
+                              SvgToInches(svg_height - p[5]),
+                              SvgToInches(p[6]),
+                              SvgToInches(svg_height - p[7]),
+                              0., 1., path);
       }
     }
-    return true;
   }
 
   bool BadPath(const Path &p) {
@@ -153,39 +100,6 @@ namespace {
     }
     return false;
   }
-
-
-  struct svgtiny_diagram *LoadSvg(const char *path) {
-    std::string contents;
-    if (!ReadFileToString(path, &contents)) {
-      return nullptr;
-    }
-    struct svgtiny_diagram *diagram = svgtiny_create();
-    const svgtiny_code code = svgtiny_parse(diagram,
-                                            contents.data(), contents.size(),
-                                            path, 100000, 100000);
-    switch (code) {
-    case svgtiny_OK:
-      return diagram;
-    case svgtiny_OUT_OF_MEMORY:
-      fprintf(stderr, "svgtiny_OUT_OF_MEMORY\n");
-      break;
-    case svgtiny_LIBDOM_ERROR:
-      fprintf(stderr, "svgtiny_LIBDOM_ERROR\n");
-      break;
-    case svgtiny_NOT_SVG:
-      fprintf(stderr, "svgtiny_NOT_SVG\n");
-      break;
-    case svgtiny_SVG_ERROR:
-      fprintf(stderr, "svgtiny_SVG_ERROR: line %i: %s\n",
-              diagram->error_line,
-              diagram->error_message);
-      break;
-    }
-    svgtiny_free(diagram);
-    return nullptr;
-  }
-
 }  // namespace
 
 bool SvgToPolygons(const char *file_name,
@@ -195,8 +109,9 @@ bool SvgToPolygons(const char *file_name,
                    std::map<double, Paths> *layers,
                    std::vector<IntPoint> *delay_points,
                    cInt *width, cInt *height) {
-  std::unique_ptr<struct svgtiny_diagram, decltype(&svgtiny_free)> diagram(
-      LoadSvg(file_name), svgtiny_free);
+  // TODO: Switch to use inches instead of Inkscape 90 pixels per inch.
+  std::unique_ptr<struct NSVGimage, decltype(&nsvgDelete)> diagram(
+      nsvgParseFromFile(file_name, "px", kSvgUnitsPerInch), nsvgDelete);
   if (!diagram)
     return false;
   if (width)
@@ -204,34 +119,34 @@ bool SvgToPolygons(const char *file_name,
   if (height)
     *height = SvgToQuanta(diagram->height);
 
-  for (unsigned i = 0; i < diagram->shape_count; i++) {
-    const auto &shape = diagram->shape[i];
-    if (shape.text) {
-      if (!strcmp(shape.text, ":delay:")) {
-        delay_points->push_back(
-            IntPoint(SvgToQuanta(shape.text_x),
-                     SvgToQuanta(diagram->height - shape.text_y)));
-      }
-    }
-    if (shape.path) {
+  for (auto shape = diagram->shapes; shape; shape = shape->next) {
+    if (shape->paths) {
       Paths paths;
-      if (!ConvertPath(shape.path, shape.path_length, diagram->height, &paths)) {
-        fprintf(stderr, "unable to process path.\n");
-        return false;
+      ConvertPath(shape->paths, diagram->height, &paths);
+      if (!paths.empty() && !paths[0].empty() && shape->strokeDashCount > 0) {
+        delay_points->push_back(paths[0][0]);
+        continue;
       }
       if (BadPaths(paths)) {
         fprintf(stderr,
-                "Input contains a bad path. This may be a bug in "
-                "libtinysvg. For example, arc commands are converted to a "
-                "single line segment.\n");
+                "Input contains a path with fewer than 3 points. This may be a "
+                "bug in nanosvg.\n");
         return false;
       }
-      if (ignore_colors.count(shape.fill)) {
+      if (shape->fill.type != NSVG_PAINT_COLOR) {
+        fprintf(stderr, "warning: ignoring shaped with non-solid fill color.\n");
         continue;
       }
-      const auto elevation_itr = color_to_elevation.find(shape.fill);
+      const unsigned int fill =
+        (shape->fill.color & 0xFF) << 16 |
+        (shape->fill.color & 0xFF00) |
+        (shape->fill.color & 0xFF0000) >> 16;
+      if (ignore_colors.count(fill)) {
+        continue;
+      }
+      const auto elevation_itr = color_to_elevation.find(fill);
       if (elevation_itr == color_to_elevation.end()) {
-        fprintf(stderr, "no elevation mapped for: %06X\n", shape.fill);
+        fprintf(stderr, "no elevation mapped for: %06X\n", fill);
         return false;
       }
       const double elevation = elevation_itr->second;

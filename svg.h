@@ -8,7 +8,7 @@
 #include "common.h"
 #include "polyclipping/clipper.hpp"
 
-const double kSvgUnitsPerInch = 90;
+const double kSvgUnitsPerInch = 90;  // Inscape uses 90. It should be 96.
 
 bool SvgToPolygons(const char *file_name,
                    const std::map<uint32_t, double> &color_to_elevation,
