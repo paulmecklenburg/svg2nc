@@ -847,6 +847,10 @@ int main(int argc, char *argv[]) {
     return EXIT_FAILURE;
   }
 
+  if (config.verbose && !delay_points.empty()) {
+    printf("Total delay points: %lu\n", delay_points.size());
+  }
+
   std::vector<CutLoop> cut_loops_storage;
   ComputeCuts(config, layers, &cut_loops_storage);
 
