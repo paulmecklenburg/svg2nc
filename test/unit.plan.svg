@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg width="270" height="270" version="1.1">
+  <rect style="fill:white" width="270" height="270" />
+  <defs>
+    <marker id="Triangle"
+      viewBox="0 0 6 6" refX="6" refY="3"
+      markerUnits="strokeWidth"
+      markerWidth="4" markerHeight="3"
+      orient="auto">
+      <path d="M 0,0 6,3 0,6 z" />
+    </marker>
+  </defs>
+  <path style="stroke-width:0.90000;stroke:red;fill:none;stroke-linecap:round;stroke-linejoin:round;stroke-opacity:1.000" marker-end="url(#Triangle)" d="M 0.00000,270.00000 101.25000,168.75000" />
+  <path style="stroke-width:22.50000;stroke:#0000FF;fill:none;stroke-linecap:round;stroke-linejoin:round;stroke-opacity:0.300" d="M 101.25000,168.75000 101.25000,101.25090 168.74910,101.25090 168.74910,168.75000 101.25000,168.75000" />
+  <path style="stroke-width:0.90000;stroke:#0000FF;fill:none;stroke-linecap:round;stroke-linejoin:round;stroke-opacity:1.000" d="M 101.25000,168.75000 101.25000,101.25090 168.74910,101.25090 168.74910,168.75000 101.25000,168.75000" />
+</svg>

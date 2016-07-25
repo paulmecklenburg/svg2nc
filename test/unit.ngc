@@ -1,0 +1,22 @@
+;; test/unit.svg
+G40 (disable tool radius compensation)
+G49 (disable tool length compensation)
+G80 (cancel modal motion)
+G54 (select coordinate system 1)
+G90 (disable incremental moves)
+G20 (imperial)
+G61 (exact path mode)
+F12.000 (feed rate)
+S1000.0 (spindle speed)
+M3 (start spindle)
+G04 p1 (wait for 1 second)
+G0 Z0.300000
+ X1.125000 Y1.125000
+G1 Z-0.010000
+ X1.125000 Y1.874990
+ X1.874990 Y1.874990
+ X1.874990 Y1.125000
+ X1.125000 Y1.125000
+G0 Z0.300000
+M5 (stop spindle)
+M2 (end program)
